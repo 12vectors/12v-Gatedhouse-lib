@@ -1,0 +1,42 @@
+{
+  "suite": "has_all_permissions",
+  "description": "Tests for hasAllPermissions(grantedSet, requiredList) -> boolean",
+  "cases": [
+    {
+      "name": "all_present_exact",
+      "granted_set": ["files:documents:read", "files:documents:write", "billing:invoices:read"],
+      "required": ["files:documents:read", "files:documents:write"],
+      "expected": true
+    },
+    {
+      "name": "all_present_via_wildcard",
+      "granted_set": ["files:*:*", "billing:invoices:read"],
+      "required": ["files:documents:read", "files:documents:write"],
+      "expected": true
+    },
+    {
+      "name": "one_missing",
+      "granted_set": ["files:documents:read"],
+      "required": ["files:documents:read", "files:documents:write"],
+      "expected": false
+    },
+    {
+      "name": "empty_required",
+      "granted_set": ["files:documents:read"],
+      "required": [],
+      "expected": true
+    },
+    {
+      "name": "empty_granted",
+      "granted_set": [],
+      "required": ["files:documents:read"],
+      "expected": false
+    },
+    {
+      "name": "superadmin_covers_all",
+      "granted_set": ["*:*:*"],
+      "required": ["files:documents:read", "billing:invoices:write", "workflow:instances:execute"],
+      "expected": true
+    }
+  ]
+}

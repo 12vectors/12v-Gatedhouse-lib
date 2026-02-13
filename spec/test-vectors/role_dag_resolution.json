@@ -1,0 +1,157 @@
+{
+  "suite": "role_dag_resolution",
+  "description": "Tests for resolving permissions through role inheritance DAG. Given a set of role definitions and assigned role IDs, compute the effective permission set.",
+  "cases": [
+    {
+      "name": "single_role_no_inheritance",
+      "roles": {
+        "member": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        }
+      },
+      "assigned_roles": ["member"],
+      "expected_permissions": ["files:documents:read"]
+    },
+    {
+      "name": "single_inheritance",
+      "roles": {
+        "viewer": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        },
+        "editor": {
+          "permissions": ["files:documents:write"],
+          "inherits": ["viewer"]
+        }
+      },
+      "assigned_roles": ["editor"],
+      "expected_permissions": ["files:documents:read", "files:documents:write"]
+    },
+    {
+      "name": "deep_inheritance_chain",
+      "roles": {
+        "viewer": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        },
+        "editor": {
+          "permissions": ["files:documents:write"],
+          "inherits": ["viewer"]
+        },
+        "admin": {
+          "permissions": ["files:documents:delete"],
+          "inherits": ["editor"]
+        }
+      },
+      "assigned_roles": ["admin"],
+      "expected_permissions": ["files:documents:read", "files:documents:write", "files:documents:delete"]
+    },
+    {
+      "name": "diamond_inheritance",
+      "roles": {
+        "base": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        },
+        "left": {
+          "permissions": ["files:documents:write"],
+          "inherits": ["base"]
+        },
+        "right": {
+          "permissions": ["files:documents:delete"],
+          "inherits": ["base"]
+        },
+        "top": {
+          "permissions": ["files:documents:share"],
+          "inherits": ["left", "right"]
+        }
+      },
+      "assigned_roles": ["top"],
+      "expected_permissions": ["files:documents:read", "files:documents:write", "files:documents:delete", "files:documents:share"]
+    },
+    {
+      "name": "cycle_detection",
+      "description": "Roles with a cycle should not infinite loop — cycle is broken by visited set",
+      "roles": {
+        "role_a": {
+          "permissions": ["perm:a:read"],
+          "inherits": ["role_b"]
+        },
+        "role_b": {
+          "permissions": ["perm:b:read"],
+          "inherits": ["role_a"]
+        }
+      },
+      "assigned_roles": ["role_a"],
+      "expected_permissions": ["perm:a:read", "perm:b:read"]
+    },
+    {
+      "name": "multiple_assigned_roles",
+      "roles": {
+        "member": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        },
+        "approver": {
+          "permissions": ["workflow:approvals:decide"],
+          "inherits": []
+        }
+      },
+      "assigned_roles": ["member", "approver"],
+      "expected_permissions": ["files:documents:read", "workflow:approvals:decide"]
+    },
+    {
+      "name": "inherited_wildcard",
+      "roles": {
+        "admin": {
+          "permissions": ["*:*:*"],
+          "inherits": []
+        },
+        "super_admin": {
+          "permissions": [],
+          "inherits": ["admin"]
+        }
+      },
+      "assigned_roles": ["super_admin"],
+      "expected_permissions": ["*:*:*"]
+    },
+    {
+      "name": "missing_parent_role_skipped",
+      "roles": {
+        "child": {
+          "permissions": ["files:documents:read"],
+          "inherits": ["nonexistent_parent"]
+        }
+      },
+      "assigned_roles": ["child"],
+      "expected_permissions": ["files:documents:read"]
+    },
+    {
+      "name": "empty_assignments",
+      "roles": {
+        "member": {
+          "permissions": ["files:documents:read"],
+          "inherits": []
+        }
+      },
+      "assigned_roles": [],
+      "expected_permissions": []
+    },
+    {
+      "name": "duplicate_permissions_deduped",
+      "roles": {
+        "role_a": {
+          "permissions": ["files:documents:read", "files:documents:write"],
+          "inherits": []
+        },
+        "role_b": {
+          "permissions": ["files:documents:read", "billing:invoices:read"],
+          "inherits": []
+        }
+      },
+      "assigned_roles": ["role_a", "role_b"],
+      "expected_permissions": ["files:documents:read", "files:documents:write", "billing:invoices:read"]
+    }
+  ]
+}

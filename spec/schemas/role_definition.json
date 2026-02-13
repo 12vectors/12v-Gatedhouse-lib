@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://superagent.dev/schemas/gatedhouse/role_definition.json",
+  "title": "RoleDefinition",
+  "description": "A role definition with permissions and inheritance",
+  "type": "object",
+  "required": ["key", "name", "permissions"],
+  "properties": {
+    "key": {
+      "type": "string",
+      "description": "Unique role identifier, e.g. 'admin', 'workflow:approver'",
+      "pattern": "^[a-z][a-z0-9_:]*$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable role name"
+    },
+    "description": {
+      "type": "string"
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Permission strings, supports wildcards: 'service:resource:action'"
+    },
+    "inherits": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Parent role keys forming the inheritance DAG"
+    },
+    "is_system": {
+      "type": "boolean",
+      "default": false,
+      "description": "System roles cannot be deleted or modified"
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "suite": "permission_check",
+  "description": "Tests for check(ctx, required) -> {allowed, source}. Tests the full authorization decision logic.",
+  "cases": [
+    {
+      "name": "standard_allow",
+      "context": {
+        "permissions": ["files:documents:read", "files:documents:write"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "files:documents:read",
+      "expected_allowed": true
+    },
+    {
+      "name": "standard_deny",
+      "context": {
+        "permissions": ["files:documents:read"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "files:documents:delete",
+      "expected_allowed": false
+    },
+    {
+      "name": "suspended_always_denied",
+      "context": {
+        "permissions": ["*:*:*"],
+        "membership_status": "suspended",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "files:documents:read",
+      "expected_allowed": false
+    },
+    {
+      "name": "wildcard_allow",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "files:documents:delete",
+      "expected_allowed": true
+    },
+    {
+      "name": "superadmin_allow",
+      "context": {
+        "permissions": ["*:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "any:resource:action",
+      "expected_allowed": true
+    },
+    {
+      "name": "scoped_allow",
+      "context": {
+        "permissions": ["files:documents:read", "files:documents:write", "billing:invoices:read"],
+        "membership_status": "active",
+        "scopes": ["files:documents:read", "billing:*:*"],
+        "delegation": null
+      },
+      "required": "files:documents:read",
+      "expected_allowed": true
+    },
+    {
+      "name": "scoped_deny_not_in_scope",
+      "context": {
+        "permissions": ["files:documents:read", "files:documents:write"],
+        "membership_status": "active",
+        "scopes": ["files:documents:read"],
+        "delegation": null
+      },
+      "required": "files:documents:write",
+      "expected_allowed": false
+    },
+    {
+      "name": "delegation_allow",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_01",
+          "scopes": ["files:documents:write"],
+          "expires_at_offset_seconds": 3600,
+          "uses_remaining": null
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": true
+    },
+    {
+      "name": "delegation_deny_outside_scope",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_02",
+          "scopes": ["files:documents:read"],
+          "expires_at_offset_seconds": 3600,
+          "uses_remaining": null
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": false
+    },
+    {
+      "name": "delegation_deny_expired",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_03",
+          "scopes": ["files:documents:write"],
+          "expires_at_offset_seconds": -60,
+          "uses_remaining": null
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": false
+    },
+    {
+      "name": "delegation_deny_exhausted",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_04",
+          "scopes": ["files:documents:write"],
+          "expires_at_offset_seconds": 3600,
+          "uses_remaining": 0
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": false
+    },
+    {
+      "name": "delegation_deny_not_in_agent_perms",
+      "context": {
+        "permissions": ["billing:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_05",
+          "scopes": ["files:documents:write"],
+          "expires_at_offset_seconds": 3600,
+          "uses_remaining": null
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": false
+    },
+    {
+      "name": "three_way_delegation_intersection",
+      "description": "Delegation scope grants write, agent has files:*, but delegator only has read+write. Write should be allowed.",
+      "context": {
+        "permissions": ["files:*:*"],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": {
+          "id": "dlg_06",
+          "scopes": ["files:documents:write", "workflow:*:*"],
+          "expires_at_offset_seconds": 3600,
+          "uses_remaining": 5
+        }
+      },
+      "required": "files:documents:write",
+      "expected_allowed": true
+    },
+    {
+      "name": "empty_permissions_deny",
+      "context": {
+        "permissions": [],
+        "membership_status": "active",
+        "scopes": null,
+        "delegation": null
+      },
+      "required": "files:documents:read",
+      "expected_allowed": false
+    }
+  ]
+}
