@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://superagent.dev/schemas/gatedhouse/identity.json",
+  "title": "Identity",
+  "description": "The authenticated identity extracted from a verified JWT",
+  "type": "object",
+  "required": ["id", "type", "auth_method"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "per_{ulid}, agt_{ulid}, or sva_{ulid}",
+      "pattern": "^(per|agt|sva)_[A-Za-z0-9]{26}$"
+    },
+    "type": {
+      "$ref": "#/$defs/identity_type"
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Present for human identities only"
+    },
+    "name": {
+      "type": "string",
+      "description": "Present for agent and service account identities"
+    },
+    "auth_method": {
+      "$ref": "#/$defs/auth_method"
+    },
+    "mfa_verified": {
+      "type": "boolean",
+      "description": "Present for human identities only"
+    }
+  },
+  "$defs": {
+    "identity_type": {
+      "type": "string",
+      "enum": ["human", "agent", "machine"]
+    },
+    "auth_method": {
+      "type": "string",
+      "enum": [
+        "password",
+        "sso",
+        "passkey",
+        "client_credentials",
+        "api_key",
+        "workload",
+        "token_exchange"
+      ]
+    }
+  }
+}

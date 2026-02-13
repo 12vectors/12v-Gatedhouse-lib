@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://superagent.dev/schemas/gatedhouse/gated_context.json",
+  "title": "GatedContext",
+  "description": "The complete authorization context populated on every authenticated request",
+  "type": "object",
+  "required": ["identity", "org", "membership", "roles", "permissions"],
+  "properties": {
+    "identity": {
+      "$ref": "identity.json"
+    },
+    "org": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "org_{ulid}"
+        }
+      }
+    },
+    "membership": {
+      "$ref": "membership.json"
+    },
+    "roles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Role names active for this membership"
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Fully resolved effective permission set"
+    },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "API key or client credential scopes (optional)"
+    },
+    "delegation": {
+      "$ref": "delegation.json"
+    }
+  }
+}
