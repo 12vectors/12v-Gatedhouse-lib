@@ -24,6 +24,7 @@ VECTORS_DIR = REPO_ROOT / "spec" / "test-vectors"
 SDK_COMMANDS = {
     "typescript": ["node", str(REPO_ROOT / "sdk-typescript" / "dist" / "conformance.js")],
     "python": [sys.executable, str(REPO_ROOT / "sdk-python" / "conformance.py")],
+    "rust": [str(REPO_ROOT / "sdk-rust" / "target" / "release" / "gatedhouse-conformance")],
 }
 
 
