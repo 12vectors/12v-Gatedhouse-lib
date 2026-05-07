@@ -119,10 +119,6 @@ impl DefaultGatedhouse {
         }
     }
 
-    pub(crate) fn group_source(&self) -> &Arc<dyn GroupSource> {
-        &self.group_source
-    }
-
     fn effective_permissions_cached(
         &self,
         identity_id: &str,
