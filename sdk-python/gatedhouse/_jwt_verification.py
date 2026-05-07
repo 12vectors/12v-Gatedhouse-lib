@@ -82,7 +82,17 @@ class JwtVerification:
         # so reaching here means the token's standard claims are good.
 
         exp_ts = claims.get("exp")
+        if not isinstance(exp_ts, (int, float)):
+            raise TokenVerificationException(
+                _R.MALFORMED, "exp claim missing or not numeric"
+            )
         iat_ts = claims.get("iat")
+        issued_at = (
+            datetime.fromtimestamp(iat_ts, tz=timezone.utc)
+            if isinstance(iat_ts, (int, float))
+            else None
+        )
+
         aud_claim = claims.get("aud", self._audience)
         audience = aud_claim if isinstance(aud_claim, str) else aud_claim[0]
         token_type = claims.get("type")
@@ -94,10 +104,7 @@ class JwtVerification:
             id=claims["sub"],
             issuer=claims["iss"],
             audience=audience,
-            issued_at=(
-                datetime.fromtimestamp(iat_ts, tz=timezone.utc)
-                if iat_ts is not None else None
-            ),
+            issued_at=issued_at,
             expires_at=datetime.fromtimestamp(exp_ts, tz=timezone.utc),
             token_type=token_type,
             claims=custom,

@@ -35,6 +35,10 @@ __pycache__/
 *.egg
 build/
 *.whl
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
 
 # Rust
 target/
