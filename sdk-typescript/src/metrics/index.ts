@@ -1,1 +1,0 @@
-export { DefaultMetricsCollector } from './collector';
