@@ -1,46 +1,61 @@
-"""Gatedhouse authorization library for the SuperAgent Platform."""
+"""Gatedhouse — embedded authorization library, Python SDK.
 
-from gatedhouse.core.types import (
-    AuthMethod,
-    DelegationContext,
-    EntityType,
-    GatedContext,
-    Identity,
-    IdentityType,
-    MembershipContext,
-    OrgContext,
-    PermissionCheckResult,
-    RoleDefinition,
+Public API: import from ``gatedhouse`` directly. Modules with leading
+underscores are implementation detail; do not import from them.
+"""
+
+from __future__ import annotations
+
+from ._config import GatedhouseConfig
+from ._database import Database
+from ._enums import EntityType, MembershipStatus
+from ._exceptions import (
+    GatedhouseDatabaseError,
+    GatedhouseError,
+    GatedhouseInitializationError,
+    SchemaNotInitializedError,
+    SchemaOutOfDateError,
+    TokenVerificationException,
 )
-from gatedhouse.core.config import GatehouseConfig, resolve_config
-from gatedhouse.core.permissions.matcher import (
-    has_all_permissions,
-    has_any_permission,
-    has_permission,
-    intersect_permissions,
-    match_permission,
-)
-from gatedhouse.core.permissions.checker import PermissionChecker
+from ._factory import GatedhouseFactory
+from ._gatedhouse import Gatedhouse
+from ._group_manager import GroupManager
+from ._group_source import GroupSource, LocalGroupSource
+from ._membership_manager import MembershipManager
+from ._permission_cache import InMemoryPermissionCache, PermissionCache
+from ._permission_catalog import PermissionCatalog
+from ._role_manager import RoleManager
+from ._token_verifier_config import TokenVerifierConfig
+from ._types import AuthenticatedSubject, EffectivePermission, PermissionCacheKey
 
 __all__ = [
-    "AuthMethod",
-    "DelegationContext",
+    # Config / lifecycle
+    "Database",
+    "Gatedhouse",
+    "GatedhouseConfig",
+    "GatedhouseFactory",
+    "TokenVerifierConfig",
+    # Sub-managers
+    "GroupManager",
+    "GroupSource",
+    "LocalGroupSource",
+    "MembershipManager",
+    "PermissionCatalog",
+    "RoleManager",
+    # Cache
+    "InMemoryPermissionCache",
+    "PermissionCache",
+    # Value types
+    "AuthenticatedSubject",
+    "EffectivePermission",
     "EntityType",
-    "GatedContext",
-    "GatehouseConfig",
-    "Identity",
-    "IdentityType",
-    "MembershipContext",
-    "OrgContext",
-    "PermissionCheckResult",
-    "PermissionChecker",
-    "RoleDefinition",
-    "has_all_permissions",
-    "has_any_permission",
-    "has_permission",
-    "intersect_permissions",
-    "match_permission",
-    "resolve_config",
+    "MembershipStatus",
+    "PermissionCacheKey",
+    # Exceptions
+    "GatedhouseDatabaseError",
+    "GatedhouseError",
+    "GatedhouseInitializationError",
+    "SchemaNotInitializedError",
+    "SchemaOutOfDateError",
+    "TokenVerificationException",
 ]
-
-__version__ = "0.1.0"

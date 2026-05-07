@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.twelvevectors</groupId>
+    <artifactId>gatedhouse</artifactId>
+    <version>0.1.0</version>
+    <packaging>jar</packaging>
+
+    <name>Gatedhouse</name>
+    <description>Embedded authorization library</description>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!--
+            Postgres JDBC driver. Library code only uses java.sql.* (stdlib);
+            the driver is loaded by JDBC's ServiceLoader at runtime.
+        -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.4</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+            Nimbus JOSE+JWT. Used by DefaultTokenVerifier for Sphinx JWT
+            verification (RS256, JWKS fetch + cache, signature & claim
+            validation). One direct dep; transitive: json-smart,
+            accessors-smart, asm (~4 jars total).
+
+            Compile scope because our public API surfaces no Nimbus types —
+            but the implementation directly references com.nimbusds.* classes,
+            so the consumer needs them on the runtime classpath.
+        -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>9.40</version>
+        </dependency>
+
+        <!--
+            JSR 107 cache API. Used by JCachePermissionCache to adapt any
+            standard JCache implementation (Ehcache 3, Hazelcast, Redisson,
+            Caffeine via its JCache adapter, …) to our PermissionCache
+            interface. ~70 KB, no transitive deps. Spec-only artifact.
+        -->
+        <dependency>
+            <groupId>javax.cache</groupId>
+            <artifactId>cache-api</artifactId>
+            <version>1.1.1</version>
+        </dependency>
+    </dependencies>
+</project>

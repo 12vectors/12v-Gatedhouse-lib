@@ -1,56 +1,50 @@
-"""CLI migration runner."""
+"""Standalone migration runner.
+
+Usage::
+
+    python -m gatedhouse.cli.migrate <conninfo>
+
+where ``<conninfo>`` is a libpq connection string, e.g.
+``postgresql://user:pass@host:5432/dbname``.
+"""
 
 from __future__ import annotations
 
-import argparse
-import asyncio
 import sys
 
-from gatedhouse.core.config import DatabaseConfig, GatehouseConfig
-from gatedhouse.database.connection import DatabaseConnection
-from gatedhouse.database.migrations import MigrationRunner
+from gatedhouse import Database, GatedhouseConfig, GatedhouseFactory
 
 
-async def run_migrate(connection_string: str, direction: str) -> None:
-    from gatedhouse.core.config import resolve_config
+USAGE = (
+    "Usage: python -m gatedhouse.cli.migrate <conninfo>\n"
+    "\n"
+    "Example:\n"
+    "  python -m gatedhouse.cli.migrate "
+    "'postgresql://user:pass@localhost:5432/mydb'\n"
+)
 
-    config = resolve_config(GatehouseConfig(
-        jwks_url="https://placeholder",
-        database=DatabaseConfig(connection_string=connection_string),
-        service="migrate-cli",
-    ))
-    db = DatabaseConnection(config)
-    await db.connect()
 
-    runner = MigrationRunner(db)
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        sys.stderr.write(USAGE)
+        return 2
+
+    conninfo = args[0]
+    config = GatedhouseConfig(database=Database.from_uri(conninfo))
 
     try:
-        if direction == "up":
-            applied = await runner.up()
-            for name in applied:
-                print(f"Applied: {name}")
-            if not applied:
-                print("No pending migrations")
-        elif direction == "down":
-            rolled_back = await runner.down()
-            for name in rolled_back:
-                print(f"Rolled back: {name}")
-            if not rolled_back:
-                print("Nothing to roll back")
-    finally:
-        await db.close()
+        GatedhouseFactory.migrate(config)
+    except Exception as e:
+        sys.stderr.write(f"Gatedhouse migration failed: {e}\n")
+        cause = e.__cause__
+        if cause is not None:
+            sys.stderr.write(f"Caused by: {cause}\n")
+        return 1
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Gatedhouse migration runner")
-    parser.add_argument("direction", choices=["up", "down"], help="Migration direction")
-    parser.add_argument(
-        "--database-url", required=True,
-        help="PostgreSQL connection string",
-    )
-    args = parser.parse_args()
-    asyncio.run(run_migrate(args.database_url, args.direction))
+    print("Gatedhouse migration completed successfully.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
