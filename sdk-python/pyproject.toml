@@ -8,12 +8,34 @@ version = "0.1.0"
 description = "Embedded authorization library — Python SDK"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "12 Vectors" }]
+maintainers = [{ name = "12 Vectors" }]
+keywords = ["authorization", "rbac", "permissions", "postgres", "jwt"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+]
 dependencies = [
     # Postgres driver. Library code only references DB-API/psycopg public types.
     "psycopg[binary]>=3.1",
     # JWT verification (RS256 + JWKS). Stdlib has no JWT support.
     "PyJWT[crypto]>=2.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/12vectors/12v-Gatedhouse-lib"
+Repository = "https://github.com/12vectors/12v-Gatedhouse-lib"
+Issues = "https://github.com/12vectors/12v-Gatedhouse-lib/issues"
 
 [project.scripts]
 gatedhouse-migrate = "gatedhouse.cli.migrate:main"
