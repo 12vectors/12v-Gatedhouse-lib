@@ -49,6 +49,49 @@ try (Gatedhouse gh = GatedhouseFactory.create(config)) {
 }
 ```
 
+### Java Web & Sphinx SSO Integration
+
+For web applications (REST APIs or browser-facing UIs), Gatedhouse provides built-in Sphinx-compatible servlet integration:
+
+*   **`SphinxClient`**: A lightweight HTTP client wrapper utilizing standard `java.net.http.HttpClient` to coordinate OAuth 2.0 authorization code exchanges, client credentials, token exchanges, token refreshes, and introspections.
+*   **`GatedhouseWebFilter`**: A standard `jakarta.servlet.Filter` that protects browser-facing UI pages (e.g., `/dashboard/*`). It reads tokens from the `HttpSession` and redirects unauthorized users' browsers to a local or absolute `loginPath` on failure.
+*   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body on failure.
+*   **`GatedContext`**: A type-safe record representation of a verified token's claims, accessible via `GatedhouseApiFilter.getContext(request)`.
+
+#### Configuration Example
+
+See [`sdk-java/sample-web.xml`](sdk-java/sample-web.xml) for a complete `web.xml` declaration and mapping template for both security filters.
+
+#### OAuth Callback Example
+
+To handle the OAuth authorization callback in a custom servlet using `SphinxClient`:
+
+```java
+public final class AuthCallbackServlet extends HttpServlet {
+    private final SphinxClient sphinx = new SphinxClient("https://sphinx.12v.sh", "client_id", "client_secret");
+
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String code = req.getParameter("code");
+        if (code == null) {
+            resp.sendRedirect("/auth/login");
+            return;
+        }
+
+        try {
+            String redirectUri = "http://localhost:8080/auth/callback";
+            TokenResponse tokenResp = sphinx.exchangeCode(code, redirectUri);
+
+            // Store token in session (GatedhouseWebFilter reads this by default)
+            req.getSession(true).setAttribute("access_token", tokenResp.accessToken());
+            resp.sendRedirect("/dashboard");
+        } catch (Exception e) {
+            resp.sendError(500, "OAuth Token Exchange Failed: " + e.getMessage());
+        }
+    }
+}
+```
+
 ### Python
 
 ```python

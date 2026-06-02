@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
+         version="6.0">
+
+    <!-- 
+        Example configuration showing how to declare and bind
+        GatedhouseWebFilter (session-based) and GatedhouseApiFilter (Bearer-based).
+    -->
+
+    <!-- 1. Web Protection Filter (Session-based) -->
+    <filter>
+        <filter-name>GatedhouseWebFilter</filter-name>
+        <filter-class>com.twelvevectors.gatedhouse.GatedhouseWebFilter</filter-class>
+        
+        <!-- The path to redirect to on authentication failure (can be relative or absolute) -->
+        <init-param>
+            <param-name>loginPath</param-name>
+            <param-value>/auth/login</param-value>
+        </init-param>
+        
+        <!-- The name of the session attribute holding the OAuth access token -->
+        <init-param>
+            <param-name>sessionTokenAttr</param-name>
+            <param-value>access_token</param-value>
+        </init-param>
+        
+        <!-- Optional: ServletContext attribute name holding the Gatedhouse instance (defaults to Gatedhouse's full class name) -->
+        <!--
+        <init-param>
+            <param-name>gatedhouseAttr</param-name>
+            <param-value>com.twelvevectors.gatedhouse.Gatedhouse</param-value>
+        </init-param>
+        -->
+    </filter>
+
+    <!-- 2. API Protection Filter (Bearer-based) -->
+    <filter>
+        <filter-name>GatedhouseApiFilter</filter-name>
+        <filter-class>com.twelvevectors.gatedhouse.GatedhouseApiFilter</filter-class>
+        
+        <!-- Optional: ServletContext attribute name holding the Gatedhouse instance -->
+        <!--
+        <init-param>
+            <param-name>gatedhouseAttr</param-name>
+            <param-value>com.twelvevectors.gatedhouse.Gatedhouse</param-value>
+        </init-param>
+        -->
+    </filter>
+
+    <!-- Map Web Filter to UI/page paths (protects dashboard, profile, and administrative sections) -->
+    <filter-mapping>
+        <filter-name>GatedhouseWebFilter</filter-name>
+        <url-pattern>/dashboard/*</url-pattern>
+        <url-pattern>/profile/*</url-pattern>
+        <url-pattern>/admin/*</url-pattern>
+    </filter-mapping>
+
+    <!-- Map API Filter to REST API patterns (returns 401 JSON on failure) -->
+    <filter-mapping>
+        <filter-name>GatedhouseApiFilter</filter-name>
+        <url-pattern>/api/*</url-pattern>
+        <url-pattern>/v1/*</url-pattern>
+    </filter-mapping>
+
+</web-app>

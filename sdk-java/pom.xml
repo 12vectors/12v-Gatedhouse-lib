@@ -7,7 +7,7 @@
 
     <groupId>com.twelvevectors</groupId>
     <artifactId>gatedhouse</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <packaging>jar</packaging>
 
     <name>Gatedhouse</name>
@@ -57,6 +57,18 @@
             <groupId>javax.cache</groupId>
             <artifactId>cache-api</artifactId>
             <version>1.1.1</version>
+        </dependency>
+
+        <!--
+            Jakarta Servlet API. Used by GatedhouseApiFilter and GatedhouseWebFilter.
+            Configured as provided scope because the host web container (Tomcat, Jetty, etc.)
+            provides this API at runtime. Zero impact on non-web consumers.
+        -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <version>6.0.0</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 

@@ -35,6 +35,14 @@ public final class GatedhouseFactory {
         return gatedhouse;
     }
 
+    /**
+     * Creates a lightweight Gatedhouse instance that only supports token verification
+     * and requires no database backend.
+     */
+    public static Gatedhouse createJustTokenVerifier(TokenVerifierConfig config) {
+        return new JustTokenVerifierGatedhouse(config);
+    }
+
     public static void migrate(GatedhouseConfig config) {
         Objects.requireNonNull(config, "config");
         try {

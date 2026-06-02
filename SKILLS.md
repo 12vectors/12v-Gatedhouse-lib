@@ -329,6 +329,21 @@ Exit code 0 = all checks pass.
 
 ## Core Concepts
 
+### Why these layers exist
+
+Authorization here is deliberately layered. The layers are independent, and not every host needs all of them — this map says what each one is *for*, why it isn't folded into another, and when you can leave it empty.
+
+| Layer | What it is | Why it's separate | When you can ignore it |
+|---|---|---|---|
+| **Membership** | `(identity, org)` gate carrying `status` | A grant says *what* an identity may do; membership says *whether it may act at all* in this org. Keeping the kill-switch off the grant graph is what lets `SUSPENDED`/`PENDING` short-circuit **before** any role is evaluated — you revoke access org-wide without touching a single assignment. | Never — every check needs an `ACTIVE` membership. A single-state host can just create-and-activate and never look at `status` again. |
+| **Direct role assignment** | `identity → role` | The minimal path from an identity to permissions. | Never; this is the floor of the model. |
+| **Groups** | `identity → group → role` | Bulk and team management. One `assignToGroup` puts a role on every current *and future* member; one `addIdentityToGroup` gives a person everything the team has. Without it you re-assign every role per identity, and nothing answers "who is on the eng team?" in one place. | If tenants are small or the product has no team/department concept, skip groups entirely — direct assignment covers it and the three group tables sit empty at **zero cost to correctness**. |
+| **Role inheritance** | `role → parent role` | Composition over duplication: `editor` inherits `viewer` as one edge instead of recopying viewer's grants. Orthogonal to groups — inheritance bundles *permissions across roles*, groups bundle *identities onto a role*. | If roles are flat and disjoint, never add a parent edge; the recursive walk simply finds none. |
+
+**Membership is a gate, not a grant.** No permissions ever attach to a membership row — permissions attach only to roles. Membership decides whether role evaluation runs at all. This separation is intentional: it is what makes suspension O(1), independent of how many roles or groups the identity has, and auditable as a single state change.
+
+**The cost of the layering.** An effective permission can arrive by up to four paths (direct-or-group → role, then optionally up an inheritance chain). That makes "*why* does Alice have `workspace:projects:write`?" non-obvious from the raw tables. The canonical answer is always `getEffectivePermissions(identity, org)` / `getRoles(...)` / `getGroups(...)` — treat those as the debugging surface, not the junction tables underneath.
+
 ### Permission model
 
 A permission is a triple **`(service, resource, action)`** — three independent strings. They map directly to three columns; there is no string parsing. A `:`-joined display form is conventional for humans (`workspace:projects:read`) but never appears in the API.
