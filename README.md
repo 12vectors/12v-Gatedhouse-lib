@@ -157,6 +157,18 @@ For lockstep consistency across processes, plug a shared cache by implementing t
 
 If you only run one application against the database, this caveat does not apply.
 
+## JWKS key rotation & caching
+
+Sphinx rotates its RS256 signing key periodically (every ~90 days), keeping the prior key published in JWKS for a grace window so tokens it already signed keep verifying. All three SDKs are compatible with this: each caches the JWKS and, on a token whose `kid` is **not** in the cached set, **refetches the JWKS and retries** before failing. So a newly-rotated signing key is picked up automatically — the brief cache-staleness window after a rotation is self-healing, costing at most one extra JWKS fetch on first sight of the new `kid`.
+
+- **Rust** (`sdk-rust`): refetch-on-miss, rate-limited to once per 10s (`MIN_REFRESH_INTERVAL`).
+- **Java** (`sdk-java`, Nimbus `JWKSourceBuilder` defaults): refetch-on-miss, rate-limited (~30s), plus a 5-min cache TTL and outage tolerance.
+- **Python** (`sdk-python`, PyJWT ≥2.8): `PyJWKClient.get_signing_key` retries with a forced JWKS refresh on a miss.
+
+**Known limitations (Python SDK only — not yet fixed):**
+1. **Refetch is not rate-limited.** Unlike Rust (10s) and Java/Nimbus (~30s), PyJWT refetches on *every* unknown-`kid` token. A flood of tokens carrying bogus `kid`s therefore drives one JWKS fetch each — mild request amplification against the issuer's `/auth/jwks`. Acceptable for normal traffic; worth a rate-limit wrapper if exposure is a concern.
+2. **Reason mis-mapping on a genuine unknown key.** PyJWT raises `Unable to find a signing key that matches: "<kid>"`; the SDK's message match looks for `"could not find"`/`"no matching"`, so a true unknown-`kid` failure surfaces as `JWKS_UNAVAILABLE` rather than `UNKNOWN_KEY`. Cosmetic — it does not affect verification or the refetch behavior above.
+
 ## Schema migration
 
 Schema lives in `gatedhouse.*` (separate Postgres schema). Each SDK embeds the same V001 SQL and runs it under a Postgres advisory lock so multiple instances or languages can call migrate concurrently.
