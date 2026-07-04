@@ -53,7 +53,8 @@ try (Gatedhouse gh = GatedhouseFactory.create(config)) {
 
 For web applications (REST APIs or browser-facing UIs), Gatedhouse provides built-in Sphinx-compatible servlet integration:
 
-*   **`SphinxClient`**: A lightweight HTTP client wrapper utilizing standard `java.net.http.HttpClient` to coordinate OAuth 2.0 authorization code exchanges, client credentials, token exchanges, token refreshes, and introspections.
+*   **`LoginFlow`**: The **recommended** entry point for browser login. Binds the flow to the user's browser with **PKCE** (`beginLogin` → redirect to Sphinx; `completeLogin` → verify + redeem before adopting identity), which prevents login-CSRF / session-swap. Use this for any browser-facing login — see [Browser login](#browser-login-loginflow--the-safe-way).
+*   **`SphinxClient`**: A lower-level HTTP client wrapper (standard `java.net.http.HttpClient`) for the OAuth 2.0 token endpoint — code exchange, client credentials, token exchange, refresh, introspection. Prefer `LoginFlow` for the browser login flow; use `SphinxClient` directly for machine-to-machine grants.
 *   **`GatedhouseWebFilter`**: A standard `jakarta.servlet.Filter` that protects browser-facing UI pages (e.g., `/dashboard/*`). It reads tokens from the `HttpSession` and redirects unauthorized users' browsers to a local or absolute `loginPath` on failure.
 *   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body on failure.
 *   **`GatedContext`**: A type-safe record representation of a verified token's claims, accessible via `GatedhouseApiFilter.getContext(request)`.
@@ -62,35 +63,53 @@ For web applications (REST APIs or browser-facing UIs), Gatedhouse provides buil
 
 See [`sdk-java/sample-web.xml`](sdk-java/sample-web.xml) for a complete `web.xml` declaration and mapping template for both security filters.
 
-#### OAuth Callback Example
+#### Browser login (`LoginFlow`) — the safe way
 
-To handle the OAuth authorization callback in a custom servlet using `SphinxClient`:
+Browser login **must** bind the flow to the user's browser, or an attacker can drop their own
+authorization `code` into your callback and seat the victim in the *attacker's* account (login-CSRF).
+`LoginFlow` does this with **PKCE**: `beginLogin` stashes a `code_verifier` in a signed, `HttpOnly`,
+`SameSite=Lax` cookie and redirects to Sphinx's `/oauth/authorize`; `completeLogin` requires that
+cookie and redeems the code **with** the verifier, so a code minted for a different browser's flow is
+rejected by Sphinx *before* your app adopts any identity.
+
+> ⚠️ **Do not** hand-roll the callback with `SphinxClient.exchangeCode(code, redirectUri)` +
+> `req.getSession(true)` for browser login — that pattern has no browser binding and is login-CSRF /
+> session-fixation vulnerable. Use `LoginFlow`, and rotate the session id on elevation.
 
 ```java
-public final class AuthCallbackServlet extends HttpServlet {
-    private final SphinxClient sphinx = new SphinxClient("https://sphinx.12v.sh", "client_id", "client_secret");
+// One LoginFlow per app. The signingKey (HMAC for the cookie) never leaves the app — use the
+// client secret or a dedicated random key.
+LoginFlow login = new LoginFlow(
+    "https://sphinx.12v.sh", "client_id", "https://app.example.com/auth/callback",
+    "openid email", clientSecret.getBytes(StandardCharsets.UTF_8),
+    new SphinxClient("https://sphinx.12v.sh", "client_id", clientSecret));
 
-    @Override
+// Login entry point — redirect the browser to Sphinx (sets the PKCE cookie).
+public final class AuthLoginServlet extends HttpServlet {
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        String code = req.getParameter("code");
-        if (code == null) {
-            resp.sendRedirect("/auth/login");
+        resp.sendRedirect(login.beginLogin(resp));
+    }
+}
+
+// Callback — verify + redeem BEFORE touching the session; rotate the session id on elevation.
+public final class AuthCallbackServlet extends HttpServlet {
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        SphinxClient.TokenResponse tokenResp;
+        try {
+            tokenResp = login.completeLogin(req, resp);   // throws LoginCsrfException on a foreign/absent code
+        } catch (LoginCsrfException e) {
+            resp.sendError(400, "Invalid login");         // attacker's code rejected; no session written
             return;
         }
-
-        try {
-            String redirectUri = "http://localhost:8080/auth/callback";
-            TokenResponse tokenResp = sphinx.exchangeCode(code, redirectUri);
-
-            // Store token in session (GatedhouseWebFilter reads this by default)
-            req.getSession(true).setAttribute("access_token", tokenResp.accessToken());
-            resp.sendRedirect("/dashboard");
-        } catch (Exception e) {
-            resp.sendError(500, "OAuth Token Exchange Failed: " + e.getMessage());
-        }
+        req.changeSessionId();                            // anti-fixation on privilege elevation
+        req.getSession(true).setAttribute("access_token", tokenResp.accessToken());
+        resp.sendRedirect("/dashboard");
     }
 }
 ```
+
+For **machine-to-machine** grants (no browser), call `SphinxClient` directly —
+`clientCredentials(...)`, `tokenExchange(...)`, `refreshToken(...)`, `introspect(...)`.
 
 ### Python
 
