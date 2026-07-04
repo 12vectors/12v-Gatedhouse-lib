@@ -29,14 +29,25 @@ public final class SphinxClient {
     }
 
     /**
-     * Exchanges an authorization code for tokens.
+     * Exchanges an authorization code for tokens (no PKCE). Prefer the 3-arg overload with a
+     * {@code codeVerifier} — see {@link LoginFlow}, which binds the code to the initiating browser.
      */
     public TokenResponse exchangeCode(String code, String redirectUri) {
+        return exchangeCode(code, redirectUri, null);
+    }
+
+    /**
+     * Exchanges an authorization code for tokens, sending the PKCE {@code code_verifier} when present
+     * (RFC 7636). Sphinx rejects the exchange unless {@code S256(codeVerifier)} matches the challenge
+     * bound to the code — so a code minted for a different browser's flow cannot be redeemed here.
+     */
+    public TokenResponse exchangeCode(String code, String redirectUri, String codeVerifier) {
         String body = "grant_type=authorization_code"
             + "&code=" + encode(code)
             + "&redirect_uri=" + encode(redirectUri)
             + "&client_id=" + encode(clientId)
-            + "&client_secret=" + encode(clientSecret);
+            + "&client_secret=" + encode(clientSecret)
+            + (codeVerifier != null ? "&code_verifier=" + encode(codeVerifier) : "");
         return postToken(body);
     }
 
