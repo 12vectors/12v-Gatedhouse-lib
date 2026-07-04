@@ -103,10 +103,19 @@ public final class AuthCallbackServlet extends HttpServlet {
         }
         req.changeSessionId();                            // anti-fixation on privilege elevation
         req.getSession(true).setAttribute("access_token", tokenResp.accessToken());
-        resp.sendRedirect("/dashboard");
+        // Deep-link back to where the user was headed, or "/dashboard" if there's no return target.
+        resp.sendRedirect(login.consumeReturnTo(req, resp, "/dashboard"));
     }
 }
 ```
+
+**Deep linking.** When `GatedhouseWebFilter` bounces an unauthenticated request to login, it records
+the original path in a short-lived `gh_return` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`), and
+`LoginFlow.consumeReturnTo(req, resp, home)` returns an **open-redirect-safe** relative path to send
+the user back to (absolute/protocol-relative URLs, backslash tricks, and control characters are
+rejected in favour of `home`). This is controlled by the filter's **`deepLinkEnabled`** toggle
+(init-param or constructor arg, default `true`): set it to `false` to disable capture entirely — no
+`gh_return` cookie is set and login always lands on `home`.
 
 For **machine-to-machine** grants (no browser), call `SphinxClient` directly —
 `clientCredentials(...)`, `tokenExchange(...)`, `refreshToken(...)`, `introspect(...)`.
