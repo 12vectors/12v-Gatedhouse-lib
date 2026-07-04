@@ -77,6 +77,56 @@ public final class LoginFlow {
         // No state parameter — PKCE is the CSRF binding.
     }
 
+    /**
+     * Consume the deep-link target set by {@link GatedhouseWebFilter}: read and clear the
+     * {@code gh_return} cookie and return a <em>validated</em> same-origin relative path to redirect
+     * to after login, or {@code defaultHome} when there is no (valid) return target.
+     *
+     * <p>Open-redirect safe: only a path beginning with a single {@code '/'} is accepted. Absolute
+     * URLs ({@code http://}, {@code https://}), protocol-relative ({@code //host}), backslash tricks
+     * ({@code /\evil.com}) and anything with control characters are rejected in favour of
+     * {@code defaultHome}.
+     */
+    public String consumeReturnTo(HttpServletRequest req, HttpServletResponse resp, String defaultHome) {
+        String raw = readReturnCookie(req);
+        clearReturnCookie(resp);
+        String safe = sanitizeReturnTo(raw);
+        return safe != null ? safe : defaultHome;
+    }
+
+    private static String readReturnCookie(HttpServletRequest req) {
+        if (req.getCookies() == null) return null;
+        for (Cookie c : req.getCookies()) {
+            if (GatedhouseWebFilter.RETURN_COOKIE.equals(c.getName())) return c.getValue();
+        }
+        return null;
+    }
+
+    private static void clearReturnCookie(HttpServletResponse resp) {
+        Cookie c = new Cookie(GatedhouseWebFilter.RETURN_COOKIE, "");
+        c.setHttpOnly(true);
+        c.setSecure(true);
+        c.setPath("/");
+        c.setMaxAge(0);
+        c.setAttribute("SameSite", "Lax");
+        resp.addCookie(c);
+    }
+
+    /** Package-private for unit tests. Returns the path if it is a safe same-origin relative path, else null. */
+    static String sanitizeReturnTo(String raw) {
+        if (raw == null || raw.isEmpty()) return null;
+        // Must be an absolute-path reference: exactly one leading '/'.
+        if (raw.charAt(0) != '/') return null;
+        if (raw.length() >= 2 && (raw.charAt(1) == '/' || raw.charAt(1) == '\\')) return null; // //host or /\host
+        // No scheme, no control chars / whitespace that could smuggle a second header or a new target.
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch <= 0x20 || ch == 0x7f || ch == '\\') return null;
+        }
+        if (raw.contains("://")) return null;
+        return raw;
+    }
+
     /** Complete: require this browser's verifier cookie, then redeem the code with it. */
     public SphinxClient.TokenResponse completeLogin(HttpServletRequest req, HttpServletResponse resp) {
         String verifier = readVerifier(req);

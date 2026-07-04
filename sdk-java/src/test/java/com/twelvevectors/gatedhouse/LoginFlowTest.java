@@ -58,4 +58,32 @@ class LoginFlowTest {
         assertNull(f.verifyCookieValue("no-dot-here"));
         assertNull(f.verifyCookieValue(".onlymac"));
     }
+
+    // ── deep-link return target (open-redirect safety) ────────────────────────────
+
+    @Test
+    void returnToAcceptsSameOriginRelativePaths() {
+        assertEquals("/dashboard", LoginFlow.sanitizeReturnTo("/dashboard"));
+        assertEquals("/reports/42?tab=usage", LoginFlow.sanitizeReturnTo("/reports/42?tab=usage"));
+        assertEquals("/", LoginFlow.sanitizeReturnTo("/"));
+    }
+
+    @Test
+    void returnToRejectsOpenRedirects() {
+        // Absolute URLs, protocol-relative, and backslash tricks must all be refused.
+        assertNull(LoginFlow.sanitizeReturnTo("https://evil.com/phish"));
+        assertNull(LoginFlow.sanitizeReturnTo("http://evil.com"));
+        assertNull(LoginFlow.sanitizeReturnTo("//evil.com/phish"));
+        assertNull(LoginFlow.sanitizeReturnTo("/\\evil.com"));
+        assertNull(LoginFlow.sanitizeReturnTo("javascript:alert(1)"));
+        assertNull(LoginFlow.sanitizeReturnTo("dashboard")); // no leading slash → not a path reference
+    }
+
+    @Test
+    void returnToRejectsControlCharsAndBlanks() {
+        assertNull(LoginFlow.sanitizeReturnTo(null));
+        assertNull(LoginFlow.sanitizeReturnTo(""));
+        assertNull(LoginFlow.sanitizeReturnTo("/path\nSet-Cookie: x=y")); // header smuggling
+        assertNull(LoginFlow.sanitizeReturnTo("/path with space")); // 0x20 rejected
+    }
 }
