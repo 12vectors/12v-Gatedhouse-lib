@@ -44,16 +44,20 @@ public final class JCachePermissionCache implements PermissionCache {
 
     private final Cache<PermissionCacheKey, List<EffectivePermission>> cache;
 
+    /**
+     * Adapter-local revocation generation, bumped by {@link #invalidate}/{@link #invalidateAll} before
+     * they touch the backing cache. {@link #getOrLoad} uses it to fence a load that a concurrent revoke
+     * overlapped (the H1 stale-repopulate race), exactly like {@link InMemoryPermissionCache}. This
+     * coordinates the <em>in-process</em> race; cross-node coherence for a distributed backing cache
+     * (node A's invalidate vs node B's load) is inherently the provider's/host's concern.
+     */
+    private final java.util.concurrent.atomic.AtomicLong generation =
+        new java.util.concurrent.atomic.AtomicLong();
+
     public JCachePermissionCache(Cache<PermissionCacheKey, List<EffectivePermission>> cache) {
         this.cache = Objects.requireNonNull(cache, "cache");
     }
 
-    /**
-     * Read-through against the backing JSR-107 cache. This adapter does not own the cache internals,
-     * so it cannot apply the single-node generation fence that {@link InMemoryPermissionCache} uses;
-     * for a distributed JCache, coherence under concurrent revocation (including cross-node staleness)
-     * is the provider's/host's responsibility — see the SDK's multi-instance caveat.
-     */
     @Override
     public List<EffectivePermission> getOrLoad(
             String identityId, String orgId, Supplier<List<EffectivePermission>> loader) {
@@ -62,20 +66,33 @@ public final class JCachePermissionCache implements PermissionCache {
         if (cached != null) {
             return cached;
         }
+        long genAtLoad = generation.get();
         // Defensive copy so a later mutation by the caller can't poison the cache (and so distributed
         // providers serialize a stable snapshot).
         List<EffectivePermission> fresh = List.copyOf(loader.get());
+        // Fence: if a revoke bumped the generation while we were loading, this value may predate it —
+        // don't cache it. The store-then-recheck-and-undo keeps this correct without a lock: a revoke
+        // increments the generation BEFORE its remove, so either our recheck sees the bump and we undo,
+        // or the revoke's remove runs after our put and clears it. Either way no stale value survives.
+        if (generation.get() != genAtLoad) {
+            return fresh;
+        }
         cache.put(key, fresh);
+        if (generation.get() != genAtLoad) {
+            cache.remove(key);
+        }
         return fresh;
     }
 
     @Override
     public void invalidate(String identityId, String orgId) {
+        generation.incrementAndGet();
         cache.remove(new PermissionCacheKey(identityId, orgId));
     }
 
     @Override
     public void invalidateAll() {
+        generation.incrementAndGet();
         cache.clear();
     }
 }
