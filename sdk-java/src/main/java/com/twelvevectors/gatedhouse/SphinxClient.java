@@ -105,7 +105,7 @@ public final class SphinxClient {
         try {
             String body = "token=" + encode(token);
             var req = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/api/sphinx/v1/oauth/introspect"))
+                .uri(URI.create(baseUrl + "/api/sphinx/v1/oauth/token/introspect"))
                 .timeout(REQUEST_TIMEOUT)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .header("Content-Type", "application/x-www-form-urlencoded")

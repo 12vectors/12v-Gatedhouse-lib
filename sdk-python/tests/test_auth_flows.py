@@ -146,6 +146,43 @@ def test_login_url_builders():
     assert c.federated_login_url("conn1", "myapp").endswith("/auth/federated/conn1?app=myapp")
 
 
+def test_introspect_hits_the_token_introspect_endpoint():
+    # Pin the exact path Sphinx serves introspection at
+    # (/api/sphinx/v1/oauth/token/introspect), so it can't silently drift.
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured: dict[str, str] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            captured["path"] = self.path
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = b'{"active": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):  # silence
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    t = threading.Thread(target=server.handle_request, daemon=True)
+    t.start()
+    try:
+        client = SphinxClient(f"http://127.0.0.1:{port}", "c", "s")
+        result = client.introspect("some-token")
+    finally:
+        t.join(timeout=5)
+        server.server_close()
+
+    assert result == {"active": True}
+    assert captured["path"] == "/api/sphinx/v1/oauth/token/introspect"
+
+
 # ── InMemoryPermissionCache generation fence (H1) ────────────────────────
 
 PERMS = [EffectivePermission("svc", "res", "act")]

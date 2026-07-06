@@ -124,7 +124,7 @@ impl SphinxClient {
     /// Introspect an access token. Fails closed on a non-200 so an error / proxy
     /// body is never handed back as if it were a valid result (review L1).
     pub fn introspect(&self, token: &str) -> Result<Value, SphinxError> {
-        let url = format!("{}/api/sphinx/v1/oauth/introspect", self.base_url);
+        let url = format!("{}/api/sphinx/v1/oauth/token/introspect", self.base_url);
         let (status, body) = self.send_form(&url, &[("token", token)])?;
         if status != 200 {
             return Err(SphinxError::Status {

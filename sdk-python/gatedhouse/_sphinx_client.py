@@ -105,7 +105,7 @@ class SphinxClient:
         proxy body is never handed back as if it were a valid result (review L1)."""
         body = urllib.parse.urlencode({"token": token})
         status, text = self._post(
-            self._base_url + "/api/sphinx/v1/oauth/introspect", body
+            self._base_url + "/api/sphinx/v1/oauth/token/introspect", body
         )
         if status != 200:
             raise RuntimeError(

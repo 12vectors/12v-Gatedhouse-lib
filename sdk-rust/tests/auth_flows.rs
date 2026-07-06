@@ -170,6 +170,46 @@ fn consume_return_to_falls_back_to_default() {
     assert_eq!(f.consume_return_to(None, "/home"), "/home");
 }
 
+// ── introspect hits the right Sphinx endpoint ─────────────────────────────
+
+#[test]
+fn introspect_hits_the_token_introspect_endpoint() {
+    // Pin the exact path Sphinx serves introspection at
+    // (/api/sphinx/v1/oauth/token/introspect), so it can't silently drift.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let n = stream.read(&mut buf).unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]).to_string();
+        let body = b"{\"active\":true}";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        request
+    });
+
+    let client = SphinxClient::new(format!("http://127.0.0.1:{port}"), "c", "s");
+    let result = client.introspect("some-token").unwrap();
+    let request = server.join().unwrap();
+
+    assert_eq!(result["active"].as_bool(), Some(true));
+    let request_line = request.lines().next().unwrap_or("");
+    assert!(
+        request_line.starts_with("POST /api/sphinx/v1/oauth/token/introspect "),
+        "unexpected request line: {request_line:?}"
+    );
+}
+
 // ── InMemoryPermissionCache generation fence (H1) ────────────────────────
 
 fn perms() -> Vec<EffectivePermission> {
