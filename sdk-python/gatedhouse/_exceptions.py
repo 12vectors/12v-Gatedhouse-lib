@@ -51,6 +51,13 @@ class SchemaOutOfDateError(GatedhouseInitializationError):
         self.expected_version = expected_version
 
 
+class LoginCsrfError(GatedhouseError):
+    """Raised by ``LoginFlow.complete_login`` when the callback cannot be tied
+    to the browser that started the login (missing/forged PKCE cookie, or a
+    missing authorization code) — an injected foreign code is rejected before
+    any identity is adopted. Mirrors the Java ``LoginCsrfException``."""
+
+
 class TokenVerificationException(GatedhouseError):
     """Raised by ``Gatedhouse.verify_token`` for any verification failure.
 

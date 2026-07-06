@@ -54,6 +54,9 @@ class JwtVerification:
                 algorithms=["RS256"],
                 audience=self._audience,
                 issuer=self._issuer,
+                # Allow a small clock-skew window on exp/nbf between this host
+                # and the issuer (review L8; matches the Java 60s tolerance).
+                leeway=60,
             )
         except ExpiredSignatureError as e:
             raise TokenVerificationException(_R.EXPIRED, str(e)) from e
@@ -93,8 +96,9 @@ class JwtVerification:
             else None
         )
 
-        aud_claim = claims.get("aud", self._audience)
-        audience = aud_claim if isinstance(aud_claim, str) else aud_claim[0]
+        # Record the audience we actually verified, not merely the first listed
+        # (review I1) — the aud check above guarantees self._audience is present.
+        audience = self._audience
         token_type = claims.get("type")
         token_type = token_type if isinstance(token_type, str) else None
 

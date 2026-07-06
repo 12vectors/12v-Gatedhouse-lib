@@ -22,15 +22,24 @@ class PermissionCache(ABC):
     """
 
     @abstractmethod
-    def get(self, identity_id: str, org_id: str) -> list[EffectivePermission] | None:
-        """Return the cached list for ``(identity_id, org_id)``, or
-        ``None`` on miss / expiry."""
+    def get_or_load(
+        self,
+        identity_id: str,
+        org_id: str,
+        loader: Callable[[], list[EffectivePermission]],
+    ) -> list[EffectivePermission]:
+        """Atomic read-through: return the cached list for ``(identity_id,
+        org_id)``, or call *loader* and cache its result. This is the *only*
+        read path — there is no separate get/put pair, precisely so a caller
+        cannot reintroduce the stale-repopulate race below.
 
-    @abstractmethod
-    def put(self, identity_id: str, org_id: str,
-            permissions: list[EffectivePermission]) -> None:
-        """Cache the effective-permission list. Implementations should
-        treat the supplied list as immutable (copy if needed)."""
+        **Revocation-safety contract:** an implementation must not cache a value
+        produced by a *loader* run that a concurrent :meth:`invalidate` /
+        :meth:`invalidate_all` overlapped — otherwise a load that observed a
+        pre-revocation snapshot can be stored after the invalidation and serve a
+        revoked permission for the full TTL. :class:`InMemoryPermissionCache`
+        enforces this with a generation fence.
+        """
 
     @abstractmethod
     def invalidate(self, identity_id: str, org_id: str) -> None:
@@ -61,6 +70,9 @@ class InMemoryPermissionCache(PermissionCache):
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._entries: dict[PermissionCacheKey, _Entry] = {}
         self._lock = Lock()
+        # Monotonic version bumped on every invalidation; get_or_load refuses to
+        # store a result loaded across a bump (the H1 stale-repopulate race).
+        self._generation = 0
         self._hits = 0
         self._misses = 0
         self._puts = 0
@@ -69,40 +81,48 @@ class InMemoryPermissionCache(PermissionCache):
 
     # ---- PermissionCache --------------------------------------------------
 
-    def get(self, identity_id: str, org_id: str) -> list[EffectivePermission] | None:
+    def get_or_load(
+        self,
+        identity_id: str,
+        org_id: str,
+        loader: Callable[[], list[EffectivePermission]],
+    ) -> list[EffectivePermission]:
         key = PermissionCacheKey(identity_id, org_id)
         now = self._clock()
         with self._lock:
             entry = self._entries.get(key)
-            if entry is None:
-                self._misses += 1
-                return None
-            if now > entry.expires_at:
-                self._entries.pop(key, None)
-                self._misses += 1
-                return None
-            self._hits += 1
-            return entry.permissions
+            if entry is not None and now <= entry.expires_at:
+                self._hits += 1
+                return entry.permissions
+            if entry is not None:
+                self._entries.pop(key, None)  # expired
+            self._misses += 1
+            gen_at_load = self._generation
 
-    def put(self, identity_id: str, org_id: str,
-            permissions: list[EffectivePermission]) -> None:
-        key = PermissionCacheKey(identity_id, org_id)
+        # Load OUTSIDE the lock — the DB round-trip must not block other callers.
+        fresh = list(loader())
         expires_at = self._clock() + self._ttl
-        # Defensive copy so a later mutation by the caller can't poison
-        # the cache.
-        snapshot = list(permissions)
+
         with self._lock:
-            self._entries[key] = _Entry(snapshot, expires_at)
-            self._puts += 1
+            # Store only if no invalidation raced the load; else a stale value
+            # could outlive a revoke. The next read simply reloads.
+            if self._generation == gen_at_load:
+                self._entries[key] = _Entry(fresh, expires_at)
+                self._puts += 1
+        return fresh
 
     def invalidate(self, identity_id: str, org_id: str) -> None:
         key = PermissionCacheKey(identity_id, org_id)
         with self._lock:
+            # Bump the generation first so any in-flight get_or_load refuses to
+            # cache its (now potentially stale) result.
+            self._generation += 1
             if self._entries.pop(key, None) is not None:
                 self._targeted_invalidations += 1
 
     def invalidate_all(self) -> None:
         with self._lock:
+            self._generation += 1
             self._entries.clear()
             self._wholesale_invalidations += 1
 

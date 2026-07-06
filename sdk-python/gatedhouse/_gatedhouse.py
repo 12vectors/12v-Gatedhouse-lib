@@ -218,12 +218,13 @@ class DefaultGatedhouse(Gatedhouse):
             # don't populate it — when bypass is cleared, the cache
             # starts cold.
             return self._load_effective_permissions(identity_id, org_id)
-        hit = self._cache.get(identity_id, org_id)
-        if hit is not None:
-            return hit
-        fresh = self._load_effective_permissions(identity_id, org_id)
-        self._cache.put(identity_id, org_id, fresh)
-        return fresh
+        # Read-through: the cache fences a load that a revoke raced (H1), so a
+        # revoke can't be masked by a stale re-populate.
+        return self._cache.get_or_load(
+            identity_id,
+            org_id,
+            lambda: self._load_effective_permissions(identity_id, org_id),
+        )
 
     def _load_effective_permissions(self, identity_id: str,
                                     org_id: str) -> list[EffectivePermission]:
