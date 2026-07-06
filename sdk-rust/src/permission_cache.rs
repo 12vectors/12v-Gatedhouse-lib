@@ -5,7 +5,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::error::GatedhouseError;
 use crate::types::{EffectivePermission, PermissionCacheKey};
+
+/// Loader run by [`PermissionCache::get_or_load`] on a miss — resolves the
+/// effective permissions from the database (and so may fail).
+pub type PermissionLoader<'a> =
+    dyn Fn() -> Result<Vec<EffectivePermission>, GatedhouseError> + 'a;
 
 /// Sits in front of the recursive-CTE permission-resolution query.
 ///
@@ -16,13 +22,23 @@ use crate::types::{EffectivePermission, PermissionCacheKey};
 ///
 /// Implementations must be `Send + Sync` and safe for concurrent use.
 pub trait PermissionCache: Send + Sync {
-    /// Return the cached list for `(identity_id, org_id)`, or `None` on
-    /// miss / expiry.
-    fn get(&self, identity_id: &str, org_id: &str) -> Option<Vec<EffectivePermission>>;
-
-    /// Cache the effective-permission list. Implementations should
-    /// treat the supplied vec as immutable (clone if needed).
-    fn put(&self, identity_id: &str, org_id: &str, permissions: Vec<EffectivePermission>);
+    /// Atomic read-through: return the cached list for `(identity_id, org_id)`,
+    /// or run `loader` and cache its result. This is the *only* read path —
+    /// there is no separate get/put pair, precisely so a caller cannot
+    /// reintroduce the stale-repopulate race below.
+    ///
+    /// **Revocation-safety contract:** an implementation must not cache a value
+    /// produced by a `loader` run that a concurrent [`invalidate`](Self::invalidate)
+    /// / [`invalidate_all`](Self::invalidate_all) overlapped — otherwise a load
+    /// that observed a pre-revocation snapshot can be stored after the
+    /// invalidation and serve a revoked permission for the full TTL.
+    /// [`InMemoryPermissionCache`] enforces this with a generation fence.
+    fn get_or_load(
+        &self,
+        identity_id: &str,
+        org_id: &str,
+        loader: &PermissionLoader<'_>,
+    ) -> Result<Vec<EffectivePermission>, GatedhouseError>;
 
     /// Drop the cache entry for one identity in one org.
     fn invalidate(&self, identity_id: &str, org_id: &str);
@@ -40,6 +56,9 @@ pub trait PermissionCache: Send + Sync {
 pub struct InMemoryPermissionCache {
     ttl: Duration,
     entries: Mutex<HashMap<PermissionCacheKey, Entry>>,
+    /// Monotonic version bumped on every invalidation; `get_or_load` refuses to
+    /// store a result loaded across a bump (the H1 stale-repopulate race).
+    generation: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
     puts: AtomicU64,
@@ -66,6 +85,7 @@ impl InMemoryPermissionCache {
         Self {
             ttl,
             entries: Mutex::new(HashMap::new()),
+            generation: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             puts: AtomicU64::new(0),
@@ -117,46 +137,61 @@ impl Default for InMemoryPermissionCache {
 }
 
 impl PermissionCache for InMemoryPermissionCache {
-    fn get(&self, identity_id: &str, org_id: &str) -> Option<Vec<EffectivePermission>> {
+    fn get_or_load(
+        &self,
+        identity_id: &str,
+        org_id: &str,
+        loader: &PermissionLoader<'_>,
+    ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
         let key = PermissionCacheKey::new(identity_id, org_id);
         let now = Instant::now();
-        let mut entries = self.entries.lock().expect("cache lock poisoned");
-        match entries.get(&key) {
-            Some(entry) if entry.expires_at > now => {
-                let result = entry.permissions.clone();
-                drop(entries);
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                Some(result)
-            }
-            Some(_) => {
-                entries.remove(&key);
-                drop(entries);
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                None
-            }
-            None => {
-                drop(entries);
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                None
+
+        // Fast path: a live cached entry.
+        {
+            let mut entries = self.entries.lock().expect("cache lock poisoned");
+            match entries.get(&key) {
+                Some(entry) if entry.expires_at > now => {
+                    let result = entry.permissions.clone();
+                    drop(entries);
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(result);
+                }
+                Some(_) => {
+                    entries.remove(&key); // expired
+                }
+                None => {}
             }
         }
-    }
+        self.misses.fetch_add(1, Ordering::Relaxed);
 
-    fn put(&self, identity_id: &str, org_id: &str, permissions: Vec<EffectivePermission>) {
-        let key = PermissionCacheKey::new(identity_id, org_id);
-        let entry = Entry {
-            permissions,
-            expires_at: Instant::now() + self.ttl,
-        };
-        self.entries
-            .lock()
-            .expect("cache lock poisoned")
-            .insert(key, entry);
-        self.puts.fetch_add(1, Ordering::Relaxed);
+        // Sample the generation, then load OUTSIDE the lock — the DB round-trip
+        // must not block other callers.
+        let gen_at_load = self.generation.load(Ordering::Acquire);
+        let fresh = loader()?;
+
+        // Store only if no invalidation raced the load; else a stale value could
+        // outlive a revoke. The next read simply reloads.
+        {
+            let mut entries = self.entries.lock().expect("cache lock poisoned");
+            if self.generation.load(Ordering::Acquire) == gen_at_load {
+                entries.insert(
+                    key,
+                    Entry {
+                        permissions: fresh.clone(),
+                        expires_at: Instant::now() + self.ttl,
+                    },
+                );
+                self.puts.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(fresh)
     }
 
     fn invalidate(&self, identity_id: &str, org_id: &str) {
         let key = PermissionCacheKey::new(identity_id, org_id);
+        // Bump the generation first so any in-flight get_or_load refuses to
+        // cache its (now potentially stale) result.
+        self.generation.fetch_add(1, Ordering::Release);
         let removed = self
             .entries
             .lock()
@@ -169,11 +204,8 @@ impl PermissionCache for InMemoryPermissionCache {
     }
 
     fn invalidate_all(&self) {
-        self.entries
-            .lock()
-            .expect("cache lock poisoned")
-            .clear();
-        self.wholesale_invalidations
-            .fetch_add(1, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Release);
+        self.entries.lock().expect("cache lock poisoned").clear();
+        self.wholesale_invalidations.fetch_add(1, Ordering::Relaxed);
     }
 }

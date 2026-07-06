@@ -38,6 +38,10 @@ struct JwksCacheState {
 
 impl JwtVerification {
     pub(crate) fn new(config: &TokenVerifierConfig) -> Self {
+        // All signature trust roots in the keys fetched from jwks_uri — a
+        // cleartext fetch would let a network attacker substitute keys and forge
+        // tokens. Require TLS (loopback exempt for dev/test). (review M4)
+        crate::secure_urls::require_https_or_loopback(&config.jwks_uri, "jwks_uri");
         Self {
             jwks_uri: config.jwks_uri.clone(),
             issuer: config.issuer.clone(),
@@ -77,13 +81,16 @@ impl JwtVerification {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
-        // jsonwebtoken validates exp/nbf by default.
+        // jsonwebtoken validates exp/nbf by default; set an explicit 60s
+        // clock-skew window between this host and the issuer (review L8).
+        validation.leeway = 60;
 
         let token_data = decode::<HashMap<String, Value>>(token, &key, &validation)
             .map_err(map_jwt_error)?;
 
-        // 4. Build AuthenticatedSubject.
-        Self::build_subject(token_data.claims)
+        // 4. Build AuthenticatedSubject (record the audience we actually
+        //    verified, not merely the first listed — review I1).
+        Self::build_subject(token_data.claims, &self.audience)
     }
 
     fn find_key(&self, kid: &str) -> Result<Jwk, TokenVerificationError> {
@@ -128,28 +135,13 @@ impl JwtVerification {
 
     fn build_subject(
         claims: HashMap<String, Value>,
+        expected_audience: &str,
     ) -> Result<AuthenticatedSubject, TokenVerificationError> {
         let id = string_claim(&claims, "sub")?;
         let issuer = string_claim(&claims, "iss")?;
-        let audience = match claims.get("aud") {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Array(arr)) => arr
-                .first()
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    TokenVerificationError::new(
-                        TokenVerificationReason::Malformed,
-                        "aud claim is an empty array",
-                    )
-                })?,
-            _ => {
-                return Err(TokenVerificationError::new(
-                    TokenVerificationReason::Malformed,
-                    "aud claim missing or wrong type",
-                ));
-            }
-        };
+        // The aud check (Validation::set_audience) already guaranteed the
+        // configured audience is present; record that verified value.
+        let audience = expected_audience.to_string();
 
         let expires_at = ts_claim(&claims, "exp")?;
         let issued_at = match claims.get("iat") {

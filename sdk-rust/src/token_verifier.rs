@@ -19,8 +19,12 @@ impl TokenVerifierConfig {
         issuer: impl Into<String>,
         audience: impl Into<String>,
     ) -> Self {
+        let jwks_uri = jwks_uri.into();
+        // All signature trust roots in the keys fetched from jwks_uri — refuse a
+        // non-TLS endpoint (loopback exempt for dev/test). (review M4)
+        crate::secure_urls::require_https_or_loopback(&jwks_uri, "jwks_uri");
         Self {
-            jwks_uri: jwks_uri.into(),
+            jwks_uri,
             issuer: issuer.into(),
             audience: audience.into(),
         }

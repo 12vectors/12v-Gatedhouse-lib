@@ -127,12 +127,11 @@ impl DefaultGatedhouse {
         if self.cache_bypass.load(Ordering::Relaxed) {
             return self.load_effective_permissions(identity_id, org_id);
         }
-        if let Some(hit) = self.cache.get(identity_id, org_id) {
-            return Ok(hit);
-        }
-        let fresh = self.load_effective_permissions(identity_id, org_id)?;
-        self.cache.put(identity_id, org_id, fresh.clone());
-        Ok(fresh)
+        // Read-through: the cache fences a load that a revoke raced (H1), so a
+        // revoke can't be masked by a stale re-populate.
+        self.cache.get_or_load(identity_id, org_id, &|| {
+            self.load_effective_permissions(identity_id, org_id)
+        })
     }
 
     fn load_effective_permissions(

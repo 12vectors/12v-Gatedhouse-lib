@@ -122,3 +122,65 @@ impl fmt::Display for TokenVerificationError {
 }
 
 impl std::error::Error for TokenVerificationError {}
+
+/// Failure of a Sphinx OAuth call (see `SphinxClient`).
+#[derive(Debug)]
+pub enum SphinxError {
+    /// Transport/network failure reaching Sphinx.
+    Http(String),
+    /// A non-200 response. `oauth_error` is only the standardized OAuth
+    /// `error` code — never the raw body (which may carry tokens).
+    Status { status: u16, oauth_error: String },
+    /// The 200 response body could not be parsed.
+    Parse(String),
+}
+
+impl fmt::Display for SphinxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SphinxError::Http(m) => write!(f, "Sphinx request failed: {m}"),
+            SphinxError::Status { status, oauth_error } => {
+                write!(f, "Sphinx request failed ({status}): {oauth_error}")
+            }
+            SphinxError::Parse(m) => write!(f, "Sphinx response parse failed: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for SphinxError {}
+
+/// The callback could not be tied to the browser that started the login
+/// (missing/forged PKCE cookie, or a missing authorization code). Mirrors the
+/// Java `LoginCsrfException` — the injected foreign code is rejected before any
+/// identity is adopted.
+#[derive(Debug)]
+pub struct LoginCsrfError {
+    pub message: String,
+}
+
+impl fmt::Display for LoginCsrfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "login CSRF check failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for LoginCsrfError {}
+
+/// Failure of `LoginFlow::complete_login`: either the browser-binding check
+/// failed ([`LoginCsrfError`]) or the underlying code exchange did ([`SphinxError`]).
+#[derive(Debug)]
+pub enum LoginError {
+    Csrf(LoginCsrfError),
+    Exchange(SphinxError),
+}
+
+impl fmt::Display for LoginError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoginError::Csrf(e) => write!(f, "{e}"),
+            LoginError::Exchange(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for LoginError {}
