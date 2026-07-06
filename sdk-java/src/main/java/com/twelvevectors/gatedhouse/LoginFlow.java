@@ -54,6 +54,8 @@ public final class LoginFlow {
                      byte[] signingKey, SphinxClient client) {
         String base = sphinxBaseUrl.endsWith("/")
             ? sphinxBaseUrl.substring(0, sphinxBaseUrl.length() - 1) : sphinxBaseUrl;
+        // The login flow rides over the Sphinx base URL — refuse a non-TLS endpoint.
+        SecureUrls.requireHttpsOrLoopback(base, "Sphinx base URL");
         this.authorizeUrl = base + "/oauth/authorize";
         this.clientId = clientId;
         this.redirectUri = redirectUri;
@@ -138,7 +140,14 @@ public final class LoginFlow {
         if (code == null || code.isBlank()) {
             throw new LoginCsrfException("callback is missing the authorization code");
         }
-        return client.exchangeCode(code, redirectUri, verifier);
+        SphinxClient.TokenResponse tokens = client.exchangeCode(code, redirectUri, verifier);
+        // Anti-fixation: rotate the session id on this privilege elevation so a pre-login (possibly
+        // attacker-fixed) session id can't be reused post-login. Guarded — no-op if the app hasn't
+        // created a session yet. Idempotent with an app that also rotates.
+        if (req.getSession(false) != null) {
+            req.changeSessionId();
+        }
+        return tokens;
     }
 
     // ── PKCE + signed cookie ("verifier.hmac"); package-private for unit tests ─────

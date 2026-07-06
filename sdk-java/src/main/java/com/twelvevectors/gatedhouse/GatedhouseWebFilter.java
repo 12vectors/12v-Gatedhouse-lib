@@ -124,20 +124,25 @@ public final class GatedhouseWebFilter implements Filter {
             return;
         }
 
+        GatedContext ctx;
         try {
             AuthenticatedSubject subject = gatedhouse.verifyToken(token);
-            GatedContext ctx = GatedContext.fromSubject(subject);
-            req.setAttribute(CONTEXT_ATTR, ctx);
-            chain.doFilter(request, response);
+            ctx = GatedContext.fromSubject(subject);
         } catch (TokenVerificationException e) {
             // Token is invalid or expired — remove it from the session and redirect
             if (session != null) {
                 session.removeAttribute(sessionTokenAttr);
             }
             performLoginRedirect(req, resp);
+            return;
         } catch (Exception e) {
             performLoginRedirect(req, resp);
+            return;
         }
+        // Only after successful verification — kept outside the try so a downstream servlet's own
+        // exception propagates as itself instead of being masked as an auth redirect.
+        req.setAttribute(CONTEXT_ATTR, ctx);
+        chain.doFilter(request, response);
     }
 
     private void performLoginRedirect(HttpServletRequest req, HttpServletResponse resp) throws IOException {

@@ -23,6 +23,9 @@ public final class TokenVerifierConfig {
         this.jwksUri = Objects.requireNonNull(builder.jwksUri, "jwksUri");
         this.issuer = Objects.requireNonNull(builder.issuer, "issuer");
         this.audience = Objects.requireNonNull(builder.audience, "audience");
+        // All signature trust is rooted in the keys fetched from jwksUri — a cleartext fetch would let
+        // a network attacker substitute keys and forge tokens. Require TLS (loopback exempt for dev/test).
+        SecureUrls.requireHttpsOrLoopback(this.jwksUri, "jwksUri");
     }
 
     public URI jwksUri() {

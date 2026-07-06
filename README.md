@@ -101,7 +101,9 @@ public final class AuthCallbackServlet extends HttpServlet {
             resp.sendError(400, "Invalid login");         // attacker's code rejected; no session written
             return;
         }
-        req.changeSessionId();                            // anti-fixation on privilege elevation
+        // completeLogin already rotates the session id (anti-fixation); this explicit call is
+        // harmless defense-in-depth if you prefer to be explicit.
+        req.changeSessionId();
         req.getSession(true).setAttribute("access_token", tokenResp.accessToken());
         // Deep-link back to where the user was headed, or "/dashboard" if there's no return target.
         resp.sendRedirect(login.consumeReturnTo(req, resp, "/dashboard"));

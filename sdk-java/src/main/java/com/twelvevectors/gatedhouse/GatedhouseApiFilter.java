@@ -68,16 +68,23 @@ public final class GatedhouseApiFilter implements Filter {
         }
 
         String token = auth.substring(7).trim();
+        GatedContext ctx;
         try {
             AuthenticatedSubject subject = gatedhouse.verifyToken(token);
-            GatedContext ctx = GatedContext.fromSubject(subject);
-            req.setAttribute(CONTEXT_ATTR, ctx);
-            chain.doFilter(request, response);
+            ctx = GatedContext.fromSubject(subject);
         } catch (TokenVerificationException e) {
-            sendJsonError(resp, 401, "unauthorized", "Token verification failed: " + e.getMessage());
+            // Do not echo the verifier's message to the client — it can disclose the expected
+            // issuer/audience. Log server-side if needed; return a generic body.
+            sendJsonError(resp, 401, "unauthorized", "Token verification failed");
+            return;
         } catch (Exception e) {
             sendJsonError(resp, 401, "unauthorized", "Authentication failed");
+            return;
         }
+        // Only after successful verification — kept outside the try so a downstream servlet's own
+        // exception propagates as itself (a 500), instead of being masked as a 401.
+        req.setAttribute(CONTEXT_ATTR, ctx);
+        chain.doFilter(request, response);
     }
 
     @Override
@@ -132,7 +139,33 @@ public final class GatedhouseApiFilter implements Filter {
         resp.setStatus(status);
         resp.setContentType("application/json");
         resp.setCharacterEncoding("UTF-8");
-        resp.getWriter().write("{\"error\":\"" + error + "\",\"detail\":\"" + detail + "\"}");
+        resp.getWriter().write(
+            "{\"error\":\"" + jsonEscape(error) + "\",\"detail\":\"" + jsonEscape(detail) + "\"}");
+    }
+
+    /** Minimal JSON string escaper so a value can never break out of the hand-rolled error body. */
+    private static String jsonEscape(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder b = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n"); break;
+                case '\r': b.append("\\r"); break;
+                case '\t': b.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        b.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        b.append(c);
+                    }
+            }
+        }
+        return b.toString();
     }
 
     public static class ForbiddenException extends RuntimeException {

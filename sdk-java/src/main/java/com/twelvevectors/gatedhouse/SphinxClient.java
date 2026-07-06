@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -16,7 +17,12 @@ import java.util.Map;
  */
 public final class SphinxClient {
 
-    private static final HttpClient HTTP = HttpClient.newHttpClient();
+    /** Bounds connection setup so an unreachable Sphinx can't hang caller threads (see per-request timeout too). */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .build();
+    /** Upper bound on a single token/introspection round-trip; generous for a healthy Sphinx. */
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
     private final String baseUrl;
     private final String clientId;
@@ -24,6 +30,8 @@ public final class SphinxClient {
 
     public SphinxClient(String baseUrl, String clientId, String clientSecret) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        // This client transmits the client_secret and receives tokens — refuse a non-TLS base URL.
+        SecureUrls.requireHttpsOrLoopback(this.baseUrl, "Sphinx baseUrl");
         this.clientId = clientId;
         this.clientSecret = clientSecret;
     }
@@ -98,10 +106,17 @@ public final class SphinxClient {
             String body = "token=" + encode(token);
             var req = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/sphinx/v1/oauth/introspect"))
+                .timeout(REQUEST_TIMEOUT)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .build();
             var resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+            // Fail closed on a non-200: an error/proxy body must never be handed back as if it were a
+            // valid introspection result (a caller could read that as "token active").
+            if (resp.statusCode() != 200) {
+                throw new RuntimeException(
+                    "Introspection failed (" + resp.statusCode() + "): " + oauthError(resp.body()));
+            }
             return JSONObjectUtils.parse(resp.body());
         } catch (IOException | InterruptedException | java.text.ParseException e) {
             throw new RuntimeException("Introspection failed", e);
@@ -130,12 +145,16 @@ public final class SphinxClient {
         try {
             var req = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/sphinx/v1/oauth/token"))
+                .timeout(REQUEST_TIMEOUT)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .build();
             var resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
-                throw new RuntimeException("Token request failed (" + resp.statusCode() + "): " + resp.body());
+                // Surface only the standardized OAuth error code, never the raw body — it may carry
+                // tokens or internal diagnostics that would leak into the caller's logs.
+                throw new RuntimeException(
+                    "Token request failed (" + resp.statusCode() + "): " + oauthError(resp.body()));
             }
             Map<String, Object> json = JSONObjectUtils.parse(resp.body());
             Number expiresInNum = (Number) json.get("expires_in");
@@ -154,6 +173,16 @@ public final class SphinxClient {
 
     private static String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    /** Extract only the short, standardized OAuth {@code error} code from an error body (never tokens). */
+    private static String oauthError(String body) {
+        try {
+            Object err = JSONObjectUtils.parse(body).get("error");
+            return err instanceof String s ? s : "unknown_error";
+        } catch (java.text.ParseException e) {
+            return "unparseable_error";
+        }
     }
 
     public record TokenResponse(

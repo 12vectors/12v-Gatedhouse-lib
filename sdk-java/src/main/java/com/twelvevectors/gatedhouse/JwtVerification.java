@@ -43,6 +43,9 @@ final class JwtVerification {
         "sub", "iss", "aud", "iat", "exp", "nbf", "type"
     );
 
+    /** Tolerance for clock drift between this host and the issuer on exp/nbf checks. */
+    private static final java.time.Duration CLOCK_SKEW = java.time.Duration.ofSeconds(60);
+
     private final String expectedIssuer;
     private final String expectedAudience;
     private final ConfigurableJWTProcessor<SecurityContext> jwtProcessor;
@@ -109,12 +112,14 @@ final class JwtVerification {
             throw fail(TokenVerificationException.Reason.EXPIRED,
                 "Token has no 'exp' claim");
         }
-        if (exp.toInstant().isBefore(now)) {
+        // Allow a small clock-skew window between this host and the issuer (Nimbus's default verifier,
+        // which we disabled above to get distinct failure reasons, applies the same 60s tolerance).
+        if (exp.toInstant().isBefore(now.minus(CLOCK_SKEW))) {
             throw fail(TokenVerificationException.Reason.EXPIRED,
                 "Token expired at " + exp.toInstant());
         }
         Date nbf = claims.getNotBeforeTime();
-        if (nbf != null && nbf.toInstant().isAfter(now)) {
+        if (nbf != null && nbf.toInstant().isAfter(now.plus(CLOCK_SKEW))) {
             throw fail(TokenVerificationException.Reason.NOT_YET_VALID,
                 "Token not valid before " + nbf.toInstant());
         }
@@ -129,7 +134,7 @@ final class JwtVerification {
         return new AuthenticatedSubject(
             claims.getSubject(),
             claims.getIssuer(),
-            audiences.get(0),
+            expectedAudience, // the audience we actually verified, not merely the first listed
             iat == null ? null : iat.toInstant(),
             exp.toInstant(),
             tokenType,
