@@ -144,6 +144,49 @@ with GatedhouseFactory.create(config) as gh:
     ok = gh.has_permission("alice", "acme", "workspace", "projects", "read")  # True
 ```
 
+#### Python — Sphinx SSO auth flows
+
+`LoginFlow` is the **recommended** browser login: it binds the flow to the user's browser with
+**PKCE** (preventing login-CSRF / session-swap). Unlike the Java servlet SDK, the Python/Rust
+`LoginFlow` is **framework-agnostic** — it returns cookie *values* for your web framework to set and
+read (so it works with Flask, Django, FastAPI, …).
+
+```python
+from gatedhouse import LoginFlow, LoginCsrfError, SphinxClient
+
+# One LoginFlow per app. signing_key (HMAC for the cookie) never leaves the app —
+# use the client secret or a dedicated random key.
+login = LoginFlow(
+    "https://sphinx.12v.sh", "client_id", "https://app.example.com/auth/callback",
+    "openid email", client_secret.encode(),
+    SphinxClient("https://sphinx.12v.sh", "client_id", client_secret),
+)
+
+# Login entry point — redirect the browser to Sphinx and set the gh_login cookie.
+def auth_login(request, response):
+    url, cookie = login.begin_login()
+    response.set_cookie(LoginFlow.COOKIE_NAME, cookie, httponly=True, secure=True,
+                        samesite="Lax", max_age=LoginFlow.COOKIE_MAX_AGE_SECONDS)
+    return redirect(url)
+
+# Callback — verify + redeem BEFORE touching the session; rotate the session id on elevation.
+def auth_callback(request, response):
+    try:
+        tokens = login.complete_login(
+            request.cookies.get(LoginFlow.COOKIE_NAME), request.args.get("code"))
+    except LoginCsrfError:
+        return error(400, "Invalid login")          # attacker's code rejected; no session written
+    response.delete_cookie(LoginFlow.COOKIE_NAME)
+    rotate_session_id(request)                       # anti-fixation (framework-specific)
+    session["access_token"] = tokens.access_token
+    # deep-link back to where the user was headed, or "/dashboard" if there's no return target
+    return redirect(login.consume_return_to(
+        request.cookies.get(LoginFlow.RETURN_COOKIE_NAME), "/dashboard"))
+```
+
+For **machine-to-machine** grants (no browser), call `SphinxClient` directly —
+`client_credentials(...)`, `token_exchange(...)`, `refresh_token(...)`, `introspect(...)`.
+
 ### Rust
 
 ```rust
@@ -170,6 +213,44 @@ gh.role_manager().assign_to_identity("alice", "acme", "viewer")?;
 
 let ok = gh.has_permission("alice", "acme", "workspace", "projects", "read")?; // true
 ```
+
+#### Rust — Sphinx SSO auth flows
+
+`LoginFlow` binds the browser login with **PKCE** (preventing login-CSRF / session-swap) and, like
+the Python SDK, is **framework-agnostic** — it returns cookie *values* for your web framework
+(axum, actix, …) to set and read.
+
+```rust
+use gatedhouse::{login_flow, LoginError, LoginFlow, SphinxClient};
+
+// signing_key (HMAC for the cookie) never leaves the app — use the client secret
+// or a dedicated random key.
+let login = LoginFlow::new(
+    "https://sphinx.12v.sh", "client_id", "https://app.example.com/auth/callback",
+    "openid email", client_secret.as_bytes(),
+    SphinxClient::new("https://sphinx.12v.sh", "client_id", client_secret),
+);
+
+// Login entry point: redirect the browser to Sphinx and set the gh_login cookie.
+let (authorize_url, cookie) = login.begin_login();
+// set cookie `login_flow::COOKIE_NAME = cookie` — HttpOnly, Secure, SameSite=Lax,
+// Max-Age = login_flow::COOKIE_MAX_AGE_SECONDS; then redirect to `authorize_url`.
+
+// Callback: verify + redeem BEFORE touching the session; rotate the session id on elevation.
+match login.complete_login(gh_login_cookie.as_deref(), code.as_deref()) {
+    Ok(tokens) => {
+        // clear the gh_login cookie; rotate the session id (anti-fixation);
+        // store tokens.access_token in the session.
+        let target = login.consume_return_to(gh_return_cookie.as_deref(), "/dashboard");
+        // redirect to `target`
+    }
+    Err(LoginError::Csrf(_)) => { /* 400 Invalid login — attacker's code rejected, no session */ }
+    Err(LoginError::Exchange(e)) => { /* upstream token exchange failed: {e} */ }
+}
+```
+
+For **machine-to-machine** grants (no browser), call `SphinxClient` directly —
+`client_credentials(...)`, `token_exchange(...)`, `refresh_token(...)`, `introspect(...)`.
 
 ## Caveat for multi-app deployments — caches are process-local
 
