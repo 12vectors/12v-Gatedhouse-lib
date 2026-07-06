@@ -3,7 +3,7 @@ package com.twelvevectors.gatedhouse;
 import javax.cache.Cache;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Adapts any JSR 107 {@link Cache} to the library's {@link PermissionCache}
@@ -48,17 +48,25 @@ public final class JCachePermissionCache implements PermissionCache {
         this.cache = Objects.requireNonNull(cache, "cache");
     }
 
+    /**
+     * Read-through against the backing JSR-107 cache. This adapter does not own the cache internals,
+     * so it cannot apply the single-node generation fence that {@link InMemoryPermissionCache} uses;
+     * for a distributed JCache, coherence under concurrent revocation (including cross-node staleness)
+     * is the provider's/host's responsibility — see the SDK's multi-instance caveat.
+     */
     @Override
-    public Optional<List<EffectivePermission>> get(String identityId, String orgId) {
-        List<EffectivePermission> value = cache.get(new PermissionCacheKey(identityId, orgId));
-        return Optional.ofNullable(value);
-    }
-
-    @Override
-    public void put(String identityId, String orgId, List<EffectivePermission> permissions) {
-        // Defensive copy so a later mutation by the caller can't poison the
-        // cache (and so distributed providers serialize a stable snapshot).
-        cache.put(new PermissionCacheKey(identityId, orgId), List.copyOf(permissions));
+    public List<EffectivePermission> getOrLoad(
+            String identityId, String orgId, Supplier<List<EffectivePermission>> loader) {
+        PermissionCacheKey key = new PermissionCacheKey(identityId, orgId);
+        List<EffectivePermission> cached = cache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        // Defensive copy so a later mutation by the caller can't poison the cache (and so distributed
+        // providers serialize a stable snapshot).
+        List<EffectivePermission> fresh = List.copyOf(loader.get());
+        cache.put(key, fresh);
+        return fresh;
     }
 
     @Override

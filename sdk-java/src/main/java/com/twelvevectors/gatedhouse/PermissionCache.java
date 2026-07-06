@@ -1,7 +1,7 @@
 package com.twelvevectors.gatedhouse;
 
 import java.util.List;
-import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Pluggable cache for the per-identity effective permission set. Sits in
@@ -15,31 +15,32 @@ import java.util.Optional;
  * {@link GatedhouseConfig.Builder#permissionCache}.
  *
  * <p><b>Thread-safety:</b> implementations <i>must</i> be safe for
- * concurrent use by multiple threads. The library calls {@link #get},
- * {@link #put}, {@link #invalidate}, and {@link #invalidateAll} from any
- * thread that touches Gatedhouse.
+ * concurrent use by multiple threads. The library calls {@link #getOrLoad},
+ * {@link #invalidate}, and {@link #invalidateAll} from any thread that
+ * touches Gatedhouse.
  *
- * <p><b>TTL and eviction:</b> the library does not pass a TTL on
- * {@link #put}. Implementations decide their own freshness policy
- * (typically a constructor-time TTL); the library guarantees correctness
- * by invalidating affected entries on every write through its API.
+ * <p><b>TTL and eviction:</b> the library does not pass a TTL. Implementations
+ * decide their own freshness policy (typically a constructor-time TTL); the
+ * library guarantees correctness by invalidating affected entries on every
+ * write through its API.
  */
 public interface PermissionCache {
 
     /**
-     * @return the cached effective-permission list for {@code (identityId,
-     *     orgId)}, or {@link Optional#empty()} on miss / expiry. The
-     *     returned list, if present, is treated as authoritative; the
-     *     library will not consult the database.
+     * Atomic read-through: return the cached list for {@code (identityId, orgId)}, or invoke
+     * {@code loader} and cache its result. This is the <em>only</em> read path — there is no separate
+     * get/put pair, precisely so a caller cannot reintroduce the stale-repopulate race below.
+     *
+     * <p><b>Revocation-safety contract:</b> an implementation <i>must not</i> cache a value produced by
+     * a {@code loader} run that a concurrent {@link #invalidate}/{@link #invalidateAll} overlapped —
+     * otherwise a load that observed a pre-revocation snapshot can be stored <i>after</i> the
+     * invalidation and serve a revoked permission for the full TTL. The shipped
+     * {@link InMemoryPermissionCache} enforces this with a generation fence; a custom single-node cache
+     * should do the same (a version/generation check, or load under a per-key lock that
+     * {@code invalidate} also takes). The supplied list should be treated as immutable.
      */
-    Optional<List<EffectivePermission>> get(String identityId, String orgId);
-
-    /**
-     * Cache the effective-permission list for {@code (identityId, orgId)}.
-     * Implementations should treat the supplied list as immutable
-     * (defensive copy if needed).
-     */
-    void put(String identityId, String orgId, List<EffectivePermission> permissions);
+    List<EffectivePermission> getOrLoad(
+        String identityId, String orgId, Supplier<List<EffectivePermission>> loader);
 
     /** Drop the cache entry for one identity in one org. */
     void invalidate(String identityId, String orgId);

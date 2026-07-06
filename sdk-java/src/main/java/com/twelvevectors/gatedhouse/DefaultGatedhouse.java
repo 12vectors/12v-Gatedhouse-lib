@@ -7,7 +7,6 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DefaultGatedhouse implements Gatedhouse {
@@ -136,13 +135,9 @@ final class DefaultGatedhouse implements Gatedhouse {
             // populate it — when bypass is cleared, the cache starts cold.
             return loadEffectivePermissions(identityId, orgId);
         }
-        Optional<List<EffectivePermission>> hit = cache.get(identityId, orgId);
-        if (hit.isPresent()) {
-            return hit.get();
-        }
-        List<EffectivePermission> fresh = loadEffectivePermissions(identityId, orgId);
-        cache.put(identityId, orgId, fresh);
-        return fresh;
+        // Read-through: the cache samples its generation, runs the loader, and stores the result only
+        // if no invalidation raced the load — so a revoke can't be masked by a stale re-populate (H1).
+        return cache.getOrLoad(identityId, orgId, () -> loadEffectivePermissions(identityId, orgId));
     }
 
     private List<EffectivePermission> loadEffectivePermissions(

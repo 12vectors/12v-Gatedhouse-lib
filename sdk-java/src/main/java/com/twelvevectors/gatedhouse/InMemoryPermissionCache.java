@@ -5,10 +5,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * Default {@link PermissionCache}: a thread-safe, in-process,
@@ -33,6 +33,14 @@ public final class InMemoryPermissionCache implements PermissionCache {
     private final Clock clock;
     private final ConcurrentMap<Key, Entry> entries = new ConcurrentHashMap<>();
 
+    /**
+     * Monotonic version bumped on every {@link #invalidate}/{@link #invalidateAll}. {@link #getOrLoad}
+     * samples it before running the loader and refuses to store the result if it has since changed —
+     * that is the fence that stops a pre-revocation load from re-populating a stale ALLOW after the
+     * invalidation has already run (the H1 stale-cache race).
+     */
+    private final AtomicLong generation = new AtomicLong();
+
     private final AtomicLong hits   = new AtomicLong();
     private final AtomicLong misses = new AtomicLong();
     private final AtomicLong puts   = new AtomicLong();
@@ -53,33 +61,10 @@ public final class InMemoryPermissionCache implements PermissionCache {
     }
 
     @Override
-    public Optional<List<EffectivePermission>> get(String identityId, String orgId) {
-        Key key = new Key(identityId, orgId);
-        Entry entry = entries.get(key);
-        if (entry == null) {
-            misses.incrementAndGet();
-            return Optional.empty();
-        }
-        if (clock.instant().isAfter(entry.expiresAt)) {
-            entries.remove(key, entry);
-            misses.incrementAndGet();
-            return Optional.empty();
-        }
-        hits.incrementAndGet();
-        return Optional.of(entry.permissions);
-    }
-
-    @Override
-    public void put(String identityId, String orgId, List<EffectivePermission> permissions) {
-        Instant expiresAt = clock.instant().plus(ttl);
-        entries.put(
-            new Key(identityId, orgId),
-            new Entry(List.copyOf(permissions), expiresAt));
-        puts.incrementAndGet();
-    }
-
-    @Override
     public void invalidate(String identityId, String orgId) {
+        // Bump the generation first so any in-flight getOrLoad that started before this point refuses
+        // to cache its (now potentially stale) result.
+        generation.incrementAndGet();
         if (entries.remove(new Key(identityId, orgId)) != null) {
             targetedInvalidations.incrementAndGet();
         }
@@ -87,8 +72,45 @@ public final class InMemoryPermissionCache implements PermissionCache {
 
     @Override
     public void invalidateAll() {
+        generation.incrementAndGet();
         entries.clear();
         wholesaleInvalidations.incrementAndGet();
+    }
+
+    /**
+     * Revocation-safe read-through (see {@link PermissionCache#getOrLoad}). Samples the generation
+     * before running {@code loader}; on completion, stores the result <em>only if</em> no
+     * invalidation intervened. If one did, the value is returned to this caller but not cached, so a
+     * concurrent revoke can never be masked by a stale re-populate — the next read reloads.
+     */
+    @Override
+    public List<EffectivePermission> getOrLoad(
+            String identityId, String orgId, Supplier<List<EffectivePermission>> loader) {
+        Key key = new Key(identityId, orgId);
+        Entry entry = entries.get(key);
+        if (entry != null && !clock.instant().isAfter(entry.expiresAt)) {
+            hits.incrementAndGet();
+            return entry.permissions;
+        }
+        if (entry != null) {
+            entries.remove(key, entry); // expired
+        }
+        misses.incrementAndGet();
+
+        long genAtLoad = generation.get();
+        List<EffectivePermission> fresh = List.copyOf(loader.get());
+        Instant expiresAt = clock.instant().plus(ttl);
+
+        // Store atomically only if no invalidation happened during the load. compute() serialises with
+        // a concurrent put/getOrLoad on this key; the generation check covers invalidate/invalidateAll.
+        entries.compute(key, (k, existing) -> {
+            if (generation.get() != genAtLoad) {
+                return existing; // an invalidation raced the load — keep whatever is there (usually nothing)
+            }
+            puts.incrementAndGet();
+            return new Entry(fresh, expiresAt);
+        });
+        return fresh;
     }
 
     // ---- observability ----------------------------------------------------
