@@ -62,7 +62,7 @@ fn available_migrations() -> Result<Vec<Migration>, GatedhouseError> {
                 )));
             }
         };
-        let checksum = sha256_hex(sql);
+        let checksum = fnv1a_hex(sql);
         out.push(Migration {
             version,
             name,
@@ -123,7 +123,7 @@ fn apply(conn: &mut Client, migration: &Migration) -> Result<(), GatedhouseError
 // diagnostic use, not enforced cryptographically against tampering.
 // A non-cryptographic FxHash would be enough; we use a simple hex of
 // FNV-1a 64-bit to avoid any extra dep.
-fn sha256_hex(s: &str) -> String {
+fn fnv1a_hex(s: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
         h ^= *b as u64;

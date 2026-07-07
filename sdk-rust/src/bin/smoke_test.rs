@@ -3,7 +3,8 @@
 //! supplied conninfo string.
 //!
 //! Usage:
-//!     cargo run --bin gatedhouse-smoke-test -- <conninfo>
+//!     DATABASE_URL='host=... user=... password=... dbname=...' \
+//!         cargo run --bin gatedhouse-smoke-test
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -58,17 +59,18 @@ fn check(description: &str, condition: bool) {
 // ---- main ----------------------------------------------------------------
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 1 {
-        eprintln!(
-            "Usage: gatedhouse-smoke-test <conninfo>\n\n\
-             Example:\n\
-             \x20   gatedhouse-smoke-test 'host=localhost user=postgres password=secret dbname=mydb'"
-        );
-        return ExitCode::from(2);
-    }
+    let conninfo = match std::env::var("DATABASE_URL") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!(
+                "Set DATABASE_URL to the Postgres conninfo, e.g. \
+                 DATABASE_URL='host=... user=... password=... dbname=...'"
+            );
+            return ExitCode::from(2);
+        }
+    };
 
-    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&args[0]));
+    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&conninfo));
     let cache = Arc::new(InMemoryPermissionCache::new());
     let config = GatedhouseConfig::builder(database.clone())
         .permission_cache(cache.clone())

@@ -13,7 +13,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Parsed OAuth token-endpoint response.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TokenResponse {
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
@@ -21,6 +21,21 @@ pub struct TokenResponse {
     pub expires_in: i64,
     pub scope: Option<String>,
     pub issued_token_type: Option<String>,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never render the token contents; expose only their presence.
+        let redact = |t: &Option<String>| t.as_ref().map(|_| "<redacted>");
+        f.debug_struct("TokenResponse")
+            .field("access_token", &redact(&self.access_token))
+            .field("refresh_token", &redact(&self.refresh_token))
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("issued_token_type", &self.issued_token_type)
+            .finish()
+    }
 }
 
 /// Thin wrapper over the Sphinx OAuth 2.0 token/introspection endpoints.

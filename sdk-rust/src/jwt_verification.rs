@@ -29,6 +29,7 @@ pub(crate) struct JwtVerification {
     issuer: String,
     audience: String,
     cache: Mutex<JwksCacheState>,
+    agent: ureq::Agent,
 }
 
 struct JwksCacheState {
@@ -50,6 +51,11 @@ impl JwtVerification {
                 jwks: None,
                 last_refresh: None,
             }),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .redirects(0)
+                .build(),
         }
     }
 
@@ -104,32 +110,41 @@ impl JwtVerification {
             }
         }
 
-        // Slow path: refresh, but rate-limit so a flood of unknown-kid
-        // tokens doesn't hammer the issuer.
-        let mut state = self.cache.lock().expect("jwks lock poisoned");
-        let now = Instant::now();
-        let recently_refreshed = state
-            .last_refresh
-            .map(|t| now.duration_since(t) < MIN_REFRESH_INTERVAL)
-            .unwrap_or(false);
+        // Decide whether to refresh — under the lock, but do NO network I/O while holding it.
+        let should_refresh = {
+            let state = self.cache.lock().expect("jwks lock poisoned");
+            let recently_refreshed = state
+                .last_refresh
+                .map(|t| Instant::now().duration_since(t) < MIN_REFRESH_INTERVAL)
+                .unwrap_or(false);
+            state.jwks.is_none() || !recently_refreshed
+        };
 
-        if state.jwks.is_none() || !recently_refreshed {
-            let fresh = fetch_jwks(&self.jwks_uri)?;
+        if should_refresh {
+            // Network I/O OUTSIDE the lock, bounded by timeouts and no redirects.
+            // A benign double-fetch race is possible here (two threads may both
+            // decide to refresh and both fetch); that is acceptable and far
+            // better than holding the cache lock across a potentially slow or
+            // hung network call, which would wedge all token verification.
+            let fresh = fetch_jwks(&self.agent, &self.jwks_uri)?;
+            let mut state = self.cache.lock().expect("jwks lock poisoned");
             state.jwks = Some(fresh);
-            state.last_refresh = Some(now);
+            state.last_refresh = Some(Instant::now());
         }
 
-        let jwks = state
-            .jwks
-            .as_ref()
-            .expect("JWKS just refreshed but is None");
-        if let Some(jwk) = jwks.find(kid).cloned() {
-            Ok(jwk)
-        } else {
-            Err(TokenVerificationError::new(
+        let state = self.cache.lock().expect("jwks lock poisoned");
+        let jwks = state.jwks.as_ref().ok_or_else(|| {
+            TokenVerificationError::new(
+                TokenVerificationReason::JwksUnavailable,
+                "JWKS unavailable after refresh",
+            )
+        })?;
+        match jwks.find(kid).cloned() {
+            Some(jwk) => Ok(jwk),
+            None => Err(TokenVerificationError::new(
                 TokenVerificationReason::UnknownKey,
                 format!("kid {kid:?} not present in JWKS"),
-            ))
+            )),
         }
     }
 
@@ -171,8 +186,8 @@ impl JwtVerification {
     }
 }
 
-fn fetch_jwks(uri: &str) -> Result<JwkSet, TokenVerificationError> {
-    let response = ureq::get(uri).call().map_err(|e| {
+fn fetch_jwks(agent: &ureq::Agent, uri: &str) -> Result<JwkSet, TokenVerificationError> {
+    let response = agent.get(uri).call().map_err(|e| {
         TokenVerificationError::new(
             TokenVerificationReason::JwksUnavailable,
             format!("JWKS endpoint unreachable ({uri}): {e}"),

@@ -166,13 +166,15 @@ impl RoleManager for DefaultRoleManager {
         action: Option<&str>,
     ) -> Result<(), GatedhouseError> {
         let mut conn = self.database.connection()?;
-        // Match on COALESCE so NULLs (wildcards) compare correctly.
+        // NULL-safe comparison: `IS NOT DISTINCT FROM` treats NULL as a value,
+        // so a NULL wildcard matches only NULL and an empty-string scope matches
+        // only ''. (COALESCE(col,'') would have conflated the two.)
         conn.execute(
             "DELETE FROM gatedhouse.role_permissions \
              WHERE role_key = $1 \
-               AND COALESCE(service,  '') = COALESCE($2, '') \
-               AND COALESCE(resource, '') = COALESCE($3, '') \
-               AND COALESCE(action,   '') = COALESCE($4, '')",
+               AND service  IS NOT DISTINCT FROM $2 \
+               AND resource IS NOT DISTINCT FROM $3 \
+               AND action   IS NOT DISTINCT FROM $4",
             &[&role_key, &service, &resource, &action],
         )?;
         self.cache.invalidate_all();

@@ -1,7 +1,8 @@
 //! Standalone migration runner.
 //!
 //! Usage:
-//!     cargo run --bin gatedhouse-migrate -- <conninfo>
+//!     DATABASE_URL='host=... user=... password=... dbname=...' \
+//!         cargo run --bin gatedhouse-migrate
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -9,17 +10,18 @@ use std::sync::Arc;
 use gatedhouse::{ConninfoDatabase, Database, GatedhouseConfig, GatedhouseFactory};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 1 {
-        eprintln!(
-            "Usage: gatedhouse-migrate <conninfo>\n\n\
-             Example:\n\
-             \x20   gatedhouse-migrate 'host=localhost user=postgres password=secret dbname=mydb'"
-        );
-        return ExitCode::from(2);
-    }
+    let conninfo = match std::env::var("DATABASE_URL") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!(
+                "Set DATABASE_URL to the Postgres conninfo, e.g. \
+                 DATABASE_URL='host=... user=... password=... dbname=...'"
+            );
+            return ExitCode::from(2);
+        }
+    };
 
-    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&args[0]));
+    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&conninfo));
     let config = GatedhouseConfig::builder(database).build();
 
     match GatedhouseFactory::migrate(&config) {
