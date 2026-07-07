@@ -10,6 +10,8 @@ attribute and never mutate verifier state on a verify call.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timezone
 
 import jwt
@@ -33,6 +35,10 @@ _STANDARD_CLAIMS = frozenset({"sub", "iss", "aud", "iat", "exp", "nbf", "type"})
 
 _R = TokenVerificationException.Reason
 
+# Minimum interval between JWKS refetches triggered by an unknown kid — caps the
+# unauthenticated amplification/DoS vector (an attacker spamming bogus kids).
+_MIN_REFRESH_INTERVAL_SECONDS = 10.0
+
 
 class JwtVerification:
 
@@ -40,14 +46,37 @@ class JwtVerification:
         self._issuer = config.issuer
         self._audience = config.audience
         # PyJWKClient handles JWKS fetching, caching, and key rotation.
-        self._jwks_client = PyJWKClient(config.jwks_uri)
+        self._jwks_client = PyJWKClient(config.jwks_uri, timeout=10)
+        self._refresh_lock = threading.Lock()
+        self._last_refresh_monotonic: float | None = None
+
+    def _signing_key_for(self, kid: str):
+        for k in self._jwks_client.get_signing_keys(refresh=False):
+            if k.key_id == kid:
+                return k.key
+        with self._refresh_lock:
+            now = time.monotonic()
+            if (self._last_refresh_monotonic is not None
+                    and now - self._last_refresh_monotonic < _MIN_REFRESH_INTERVAL_SECONDS):
+                raise TokenVerificationException(
+                    _R.UNKNOWN_KEY, f"kid {kid!r} not present in JWKS (refresh rate-limited)")
+            self._last_refresh_monotonic = now
+            keys = self._jwks_client.get_signing_keys(refresh=True)
+        for k in keys:
+            if k.key_id == kid:
+                return k.key
+        raise TokenVerificationException(_R.UNKNOWN_KEY, f"kid {kid!r} not present in JWKS")
 
     def verify(self, token: str) -> AuthenticatedSubject:
         if token is None:
             raise TypeError("token must not be None")
 
         try:
-            signing_key = self._jwks_client.get_signing_key_from_jwt(token).key
+            header = jwt.get_unverified_header(token)
+            kid = header.get("kid")
+            if not isinstance(kid, str):
+                raise TokenVerificationException(_R.MALFORMED, "JWT header has no kid")
+            signing_key = self._signing_key_for(kid)
             claims: dict = jwt.decode(
                 token,
                 signing_key,
@@ -104,8 +133,14 @@ class JwtVerification:
 
         custom = {k: v for k, v in claims.items() if k not in _STANDARD_CLAIMS}
 
+        sub = claims.get("sub")
+        if not isinstance(sub, str):
+            raise TokenVerificationException(
+                _R.MALFORMED, "sub claim missing or not a string"
+            )
+
         return AuthenticatedSubject(
-            id=claims["sub"],
+            id=sub,
             issuer=claims["iss"],
             audience=audience,
             issued_at=issued_at,

@@ -9,21 +9,35 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ._secure_urls import require_https_or_loopback
 
-# Upper bound on a single token/introspection round-trip (connect + read),
-# so an unresponsive Sphinx cannot hang the caller indefinitely (review M2).
+# Per-socket-operation timeout: bounds each individual connect/read on a
+# token/introspection call, so an unresponsive Sphinx cannot hang the caller
+# indefinitely (review M2). It is NOT a total wall-clock deadline — a response
+# that keeps trickling bytes just under this interval can still exceed it.
 _REQUEST_TIMEOUT_SECONDS = 10.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirect refused: {newurl}", headers, fp
+        )
+
+
+# Token/introspection calls must never follow a 3xx: a redirect (incl. an
+# https->http downgrade) could substitute the response body (review M-redirect).
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 @dataclass(frozen=True, slots=True)
 class TokenResponse:
     """Parsed OAuth token-endpoint response."""
 
-    access_token: str | None
-    refresh_token: str | None
+    access_token: str | None = field(repr=False)
+    refresh_token: str | None = field(repr=False)
     token_type: str | None
     expires_in: int
     scope: str | None
@@ -161,7 +175,7 @@ class SphinxClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+            with _OPENER.open(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
                 return resp.status, resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             # Non-2xx responses arrive here; return status + body for the caller

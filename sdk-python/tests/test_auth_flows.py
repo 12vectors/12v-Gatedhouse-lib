@@ -183,6 +183,36 @@ def test_introspect_hits_the_token_introspect_endpoint():
     assert captured["path"] == "/api/sphinx/v1/oauth/token/introspect"
 
 
+def test_introspect_refuses_to_follow_redirects():
+    # A 3xx (e.g. an https->http downgrade) must never be followed — otherwise
+    # a redirect could substitute the introspection response.
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(302)
+            self.send_header("Location", "http://evil/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):  # silence
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    t = threading.Thread(target=server.handle_request, daemon=True)
+    t.start()
+    try:
+        client = SphinxClient(f"http://127.0.0.1:{port}", "c", "s")
+        with pytest.raises(RuntimeError):
+            client.introspect("t")
+    finally:
+        t.join(timeout=5)
+        server.server_close()
+
+
 # ── InMemoryPermissionCache generation fence (H1) ────────────────────────
 
 PERMS = [EffectivePermission("svc", "res", "act")]

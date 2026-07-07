@@ -2,35 +2,32 @@
 
 Usage::
 
-    python -m gatedhouse.cli.migrate <conninfo>
+    DATABASE_URL='postgresql://user:pwd@host:5432/db' python -m gatedhouse.cli.migrate
 
-where ``<conninfo>`` is a libpq connection string, e.g.
-``postgresql://user:pass@host:5432/dbname``.
+The libpq connection string is read from the ``DATABASE_URL`` environment
+variable so the password never appears on the command line / process list.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 from gatedhouse import Database, GatedhouseConfig, GatedhouseFactory
 
 
 USAGE = (
-    "Usage: python -m gatedhouse.cli.migrate <conninfo>\n"
-    "\n"
-    "Example:\n"
-    "  python -m gatedhouse.cli.migrate "
-    "'postgresql://user:pass@localhost:5432/mydb'\n"
+    "Set DATABASE_URL to the Postgres conninfo, e.g. "
+    "DATABASE_URL='postgresql://user:pwd@host:5432/db'\n"
 )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
+    conninfo = os.environ.get("DATABASE_URL")
+    if not conninfo:
         sys.stderr.write(USAGE)
         return 2
 
-    conninfo = args[0]
     config = GatedhouseConfig(database=Database.from_uri(conninfo))
 
     try:

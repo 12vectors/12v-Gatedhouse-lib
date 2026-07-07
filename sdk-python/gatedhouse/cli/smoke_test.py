@@ -4,11 +4,12 @@ supplied conninfo string.
 
 Usage::
 
-    python -m gatedhouse.cli.smoke_test <conninfo>
+    DATABASE_URL='postgresql://user:pwd@host:5432/db' python -m gatedhouse.cli.smoke_test
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from datetime import timedelta
@@ -416,22 +417,18 @@ def _cleanup(database: _Db) -> None:
 
 
 USAGE = (
-    "Usage: python -m gatedhouse.cli.smoke_test <conninfo>\n"
-    "\n"
-    "Example:\n"
-    "  python -m gatedhouse.cli.smoke_test "
-    "'postgresql://user:pass@localhost:5432/mydb'\n"
+    "Set DATABASE_URL to the Postgres conninfo, e.g. "
+    "DATABASE_URL='postgresql://user:pwd@host:5432/db'\n"
 )
 
 
 def main(argv: list[str] | None = None) -> int:
     global _passed, _failed
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
+    conninfo = os.environ.get("DATABASE_URL")
+    if not conninfo:
         sys.stderr.write(USAGE)
         return 2
 
-    conninfo = args[0]
     database = Database.from_uri(conninfo)
     cache = InMemoryPermissionCache()
     config = GatedhouseConfig(database=database, permission_cache=cache)
