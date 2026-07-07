@@ -192,5 +192,19 @@ public final class SphinxClient {
         int expiresIn,
         String scope,
         String issuedTokenType
-    ) {}
+    ) {
+        /**
+         * Redacts the access/refresh tokens — the auto-generated record {@code toString()} would
+         * otherwise print both secrets verbatim into any log line that renders this value.
+         */
+        @Override
+        public String toString() {
+            return "TokenResponse[accessToken=" + (accessToken != null ? "<redacted>" : "null")
+                + ", refreshToken=" + (refreshToken != null ? "<redacted>" : "null")
+                + ", tokenType=" + tokenType
+                + ", expiresIn=" + expiresIn
+                + ", scope=" + scope
+                + ", issuedTokenType=" + issuedTokenType + "]";
+        }
+    }
 }

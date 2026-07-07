@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pins the exact path Sphinx serves introspection at
@@ -16,6 +18,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * requested path so this can't silently drift back to a wrong endpoint.
  */
 class SphinxClientIntrospectTest {
+
+    @Test
+    void tokenResponseToStringRedactsSecrets() {
+        var tr = new SphinxClient.TokenResponse(
+            "SECRET_ACCESS", "SECRET_REFRESH", "Bearer", 3600, "openid", null);
+        String s = tr.toString();
+        assertFalse(s.contains("SECRET_ACCESS"), "access token must not appear in toString()");
+        assertFalse(s.contains("SECRET_REFRESH"), "refresh token must not appear in toString()");
+        assertTrue(s.contains("<redacted>"));
+        assertTrue(s.contains("Bearer") && s.contains("3600"), "non-secret fields remain visible");
+    }
 
     @Test
     void introspectHitsTheTokenIntrospectEndpoint() throws Exception {
