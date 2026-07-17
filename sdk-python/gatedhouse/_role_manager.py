@@ -1,3 +1,7 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
 """Role definitions, permission grants, inheritance, and role assignments."""
 
 from __future__ import annotations

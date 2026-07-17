@@ -92,6 +92,53 @@ public final class AuthCallbackServlet extends HttpServlet {
 }
 ```
 
+### Python Web & Sphinx SSO Integration
+
+The Python SDK ships the same integration surface, adapted to Python's platform-neutral web standard (WSGI, PEP 3333) with zero extra dependencies:
+
+*   **`SphinxClient`**: The same OAuth 2.0 helper (code exchange, client credentials, token exchange, refresh, introspection, login URLs) built on stdlib `urllib`.
+*   **`GatedhouseWebFilter`**: WSGI middleware guarding browser-facing pages. Reads the token from a session mapping the host's session middleware exposes in the environ (`session_environ_key`, default `"gatedhouse.session"`) and 302-redirects to `login_path` on failure.
+*   **`GatedhouseApiFilter`**: WSGI middleware guarding REST endpoints. Validates `Authorization: Bearer <token>` and returns the same `401` JSON body on failure. Helpers `get_context(environ)`, `require_admin`, `require_human`, and `require_scope` mirror the Java statics.
+*   **`GatedContext`**: The same type-safe claims view, stamped into the WSGI environ under the same key Java uses for its request attribute.
+*   **`GatedhouseFactory.create_just_token_verifier(TokenVerifierConfig(...))`**: database-free, verify-only instance.
+
+```python
+from gatedhouse import GatedhouseApiFilter, GatedhouseFactory, SphinxClient, TokenVerifierConfig
+
+gh = GatedhouseFactory.create_just_token_verifier(
+    TokenVerifierConfig(jwks_uri="https://sphinx.12v.sh/api/sphinx/v1/.well-known/jwks.json",
+                        issuer="https://sphinx.12v.sh", audience="my-app"))
+app = GatedhouseApiFilter(my_wsgi_app, gh)   # 401s anything without a valid Bearer token
+
+sphinx = SphinxClient("https://sphinx.12v.sh", "client_id", "client_secret")
+tokens = sphinx.exchange_code(code, "http://localhost:8000/auth/callback")
+```
+
+### Rust Web & Sphinx SSO Integration
+
+Rust has no servlet-like standard interface, so the Rust SDK exposes the same decision logic as framework-agnostic guards you wire into axum/actix/hyper middleware in a few lines:
+
+*   **`SphinxClient`**: The same OAuth 2.0 helper, built on `ureq` (already a dependency).
+*   **`GatedhouseApiFilter::authenticate(authorization_header)`**: returns the verified `GatedContext` or a `FilterError` carrying the exact 401 status and JSON body the Java filter writes. `require_admin` / `require_human` / `require_scope` return `FilterError::Forbidden` on failure.
+*   **`GatedhouseWebFilter::check(session_token, context_path)`**: returns `WebFilterOutcome::Authenticated(ctx)` or `WebFilterOutcome::RedirectToLogin { location, clear_session_token }` — the same redirect resolution (absolute vs. context-relative login path) and session-eviction semantics.
+*   **`SECURITY_HEADERS`**: the header set both Java filters apply, for the host to add to every response.
+*   **`GatedhouseFactory::create_just_token_verifier(TokenVerifierConfig)`**: database-free, verify-only instance.
+
+```rust
+use gatedhouse::{GatedhouseApiFilter, GatedhouseFactory, SphinxClient, TokenVerifierConfig};
+
+let gh = GatedhouseFactory::create_just_token_verifier(TokenVerifierConfig::new(
+    "https://sphinx.12v.sh/api/sphinx/v1/.well-known/jwks.json",
+    "https://sphinx.12v.sh",
+    "my-app",
+));
+let filter = GatedhouseApiFilter::new(gh);
+let ctx = filter.authenticate(auth_header)?; // Err carries status() + to_json_body()
+
+let sphinx = SphinxClient::new("https://sphinx.12v.sh", "client_id", "client_secret");
+let tokens = sphinx.exchange_code(&code, "http://localhost:8000/auth/callback")?;
+```
+
 ### Python
 
 ```python
@@ -163,7 +210,7 @@ Schema lives in `gatedhouse.*` (separate Postgres schema). Each SDK embeds the s
 
 | SDK | Command |
 |---|---|
-| Java | `java -cp gatedhouse-0.1.0.jar:postgresql-42.7.4.jar com.twelvevectors.gatedhouse.cli.Migrate <jdbc-url> <user> <pwd>` |
+| Java | `java -cp gatedhouse-0.2.0.jar:postgresql-42.7.4.jar com.twelvevectors.gatedhouse.cli.Migrate <jdbc-url> <user> <pwd>` |
 | Python | `python -m gatedhouse.cli.migrate "<conninfo>"` |
 | Rust | `cargo run --bin gatedhouse-migrate -- "<conninfo>"` |
 

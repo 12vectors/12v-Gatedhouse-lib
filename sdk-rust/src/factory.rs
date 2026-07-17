@@ -1,3 +1,7 @@
+// Copyright (c) 2026 12vectors.com
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the repository root for the full license text.
+
 //! Static factory mirroring Java's `GatedhouseFactory`.
 
 use std::sync::Arc;
@@ -5,8 +9,10 @@ use std::sync::Arc;
 use crate::config::GatedhouseConfig;
 use crate::error::GatedhouseError;
 use crate::gatedhouse::{DefaultGatedhouse, Gatedhouse};
+use crate::just_token_verifier::JustTokenVerifierGatedhouse;
 use crate::migrator;
 use crate::schema_check;
+use crate::token_verifier::TokenVerifierConfig;
 
 pub struct GatedhouseFactory;
 
@@ -24,6 +30,16 @@ impl GatedhouseFactory {
         group_source.start(gatedhouse.as_ref() as &dyn Gatedhouse);
 
         Ok(gatedhouse as Arc<dyn Gatedhouse>)
+    }
+
+    /// Creates a lightweight Gatedhouse instance that only supports token
+    /// verification and requires no database backend.
+    ///
+    /// Every database-backed method on the returned handle panics with
+    /// "Database operations not supported on token-verifier-only
+    /// instance" — the analog of Java's `UnsupportedOperationException`.
+    pub fn create_just_token_verifier(config: TokenVerifierConfig) -> Arc<dyn Gatedhouse> {
+        Arc::new(JustTokenVerifierGatedhouse::new(&config))
     }
 
     /// Run any pending migrations against the configured database. Safe

@@ -45,7 +45,7 @@ Embedded authorization library. Provides RBAC with role inheritance, group-based
 <dependency>
   <groupId>com.twelvevectors</groupId>
   <artifactId>gatedhouse</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -68,7 +68,7 @@ The library does **not** auto-create its schema at application startup. The bund
 
 ```bash
 # Java
-java -cp gatedhouse-0.1.0.jar:postgresql-42.7.4.jar \
+java -cp gatedhouse-0.2.0.jar:postgresql-42.7.4.jar \
      com.twelvevectors.gatedhouse.cli.Migrate \
      jdbc:postgresql://localhost:5432/yourdb yourdbuser yourpassword
 
@@ -287,6 +287,23 @@ let who = gh.verify_token(&bearer_token)?;
 let ok = gh.has_permission(&who.id, org_id, "workspace", "projects", "read")?;
 ```
 
+### Web & Sphinx SSO integration
+
+Same components in all three SDKs, adapted to each platform's web standard: Java uses `jakarta.servlet.Filter`, Python uses WSGI middleware (PEP 3333), and Rust — which has no servlet-like standard — exposes the same decision logic as framework-agnostic guards returning either the verified context or the response to write.
+
+| Concept | Java | Python | Rust |
+|---|---|---|---|
+| Verified claims view | `GatedContext` (record) | `GatedContext` (frozen dataclass) | `GatedContext` (struct) |
+| Build from subject | `GatedContext.fromSubject(subject)` | `GatedContext.from_subject(subject)` | `GatedContext::from_subject(&subject)` |
+| Claim helpers | `isAdmin()` / `isHuman()` / `isDelegated()` / `hasScope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` |
+| OAuth helper | `SphinxClient` (`java.net.http`) | `SphinxClient` (stdlib `urllib`) | `SphinxClient` (`ureq`) → `Result<_, SphinxError>` |
+| API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
+| Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI, reads session mapping from environ) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
+| Privilege asserts | `requireAdmin/requireHuman/requireScope` (throw `ForbiddenException`) | `require_admin/require_human/require_scope` (raise `ForbiddenException`) | `require_admin/require_human/require_scope` (return `FilterError::Forbidden`) |
+| Verify-only instance | `GatedhouseFactory.createJustTokenVerifier(cfg)` | `GatedhouseFactory.create_just_token_verifier(cfg)` | `GatedhouseFactory::create_just_token_verifier(cfg)` |
+
+The verify-only instance needs no database; every database-backed method on it fails fast (Java `UnsupportedOperationException`, Python `NotImplementedError`, Rust panic) with the same message. The request-context key (`com.twelvevectors.gatedhouse.context`), default login path (`/auth/login`), default session token attribute (`access_token`), security headers, and 401 JSON body shape are identical across SDKs.
+
 ### Failure-mode handling for `verify_token`
 
 All three SDKs expose the **same nine reasons** so the host can branch on the failure:
@@ -483,11 +500,18 @@ com.twelvevectors.gatedhouse
 │   └── close()
 ├── GatedhouseFactory
 │   ├── create(GatedhouseConfig)   ← validates schema, returns Gatedhouse
+│   ├── createJustTokenVerifier(TokenVerifierConfig) ← database-free, verify-only
 │   └── migrate(GatedhouseConfig)  ← runs pending migrations
 ├── GatedhouseConfig (+ Builder)
 ├── Database                    ← functional interface; getConnection()
 ├── GroupSource (+ LocalGroupSource)
 ├── TokenVerifierConfig (+ Builder)
+│
+├── Web & Sphinx SSO integration
+│   ├── GatedContext            ← type-safe view of a verified token's claims
+│   ├── SphinxClient            ← OAuth 2.0 helper (code exchange, refresh, introspect, …)
+│   ├── GatedhouseApiFilter     ← Bearer-token guard for REST endpoints (401 JSON)
+│   └── GatedhouseWebFilter     ← session-token guard for pages (login redirect)
 │
 ├── Value types
 │   ├── EntityType              (USER, AGENT)

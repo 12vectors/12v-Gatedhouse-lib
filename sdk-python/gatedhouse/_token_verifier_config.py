@@ -1,3 +1,7 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
 """Configuration for the optional JWT verification helper."""
 
 from __future__ import annotations
