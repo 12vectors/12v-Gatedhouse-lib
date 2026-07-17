@@ -1,3 +1,7 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
 """Gatedhouse — embedded authorization library, Python SDK.
 
 Public API: import from ``gatedhouse`` directly. Modules with leading

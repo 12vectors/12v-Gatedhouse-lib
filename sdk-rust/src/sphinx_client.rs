@@ -1,3 +1,7 @@
+// Copyright (c) 2026 12vectors.com
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the repository root for the full license text.
+
 //! HTTP client wrapper to orchestrate Sphinx SSO OAuth 2.0 endpoints.
 //!
 //! Uses `ureq` (already a dependency for JWKS fetching), mirroring the

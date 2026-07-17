@@ -1,3 +1,7 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
 """Type-safe view over a verified Sphinx token's claims."""
 
 from __future__ import annotations

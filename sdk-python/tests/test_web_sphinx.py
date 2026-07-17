@@ -1,3 +1,7 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
 """Unit tests for the web & Sphinx SSO integration surface.
 
 No database or network required — token verification is stubbed. Run with

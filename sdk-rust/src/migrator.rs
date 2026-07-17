@@ -1,3 +1,7 @@
+// Copyright (c) 2026 12vectors.com
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the repository root for the full license text.
+
 //! Tiny migration runner. Reads V###__name.sql files embedded at compile
 //! time, tracks applied versions in `gatedhouse.schema_versions`, applies
 //! pending migrations under a Postgres advisory lock so concurrent
