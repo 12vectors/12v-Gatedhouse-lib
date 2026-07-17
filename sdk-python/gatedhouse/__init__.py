@@ -18,6 +18,7 @@ from ._exceptions import (
     TokenVerificationException,
 )
 from ._factory import GatedhouseFactory
+from ._gated_context import GatedContext
 from ._gatedhouse import Gatedhouse
 from ._group_manager import GroupManager
 from ._group_source import GroupSource, LocalGroupSource
@@ -25,8 +26,15 @@ from ._membership_manager import MembershipManager
 from ._permission_cache import InMemoryPermissionCache, PermissionCache
 from ._permission_catalog import PermissionCatalog
 from ._role_manager import RoleManager
+from ._sphinx_client import SphinxClient, TokenResponse
 from ._token_verifier_config import TokenVerifierConfig
 from ._types import AuthenticatedSubject, EffectivePermission, PermissionCacheKey
+from ._web import (
+    ForbiddenException,
+    GatedhouseApiFilter,
+    GatedhouseWebFilter,
+    UnauthorizedException,
+)
 
 __all__ = [
     # Config / lifecycle
@@ -45,6 +53,12 @@ __all__ = [
     # Cache
     "InMemoryPermissionCache",
     "PermissionCache",
+    # Web & Sphinx SSO integration
+    "GatedContext",
+    "GatedhouseApiFilter",
+    "GatedhouseWebFilter",
+    "SphinxClient",
+    "TokenResponse",
     # Value types
     "AuthenticatedSubject",
     "EffectivePermission",
@@ -52,10 +66,12 @@ __all__ = [
     "MembershipStatus",
     "PermissionCacheKey",
     # Exceptions
+    "ForbiddenException",
     "GatedhouseDatabaseError",
     "GatedhouseError",
     "GatedhouseInitializationError",
     "SchemaNotInitializedError",
     "SchemaOutOfDateError",
     "TokenVerificationException",
+    "UnauthorizedException",
 ]

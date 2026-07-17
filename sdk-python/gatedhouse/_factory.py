@@ -6,6 +6,8 @@ from . import _migrator, _schema_check
 from ._config import GatedhouseConfig
 from ._exceptions import GatedhouseInitializationError
 from ._gatedhouse import DefaultGatedhouse, Gatedhouse
+from ._token_verifier_config import TokenVerifierConfig
+from ._token_verifier_gatedhouse import JustTokenVerifierGatedhouse
 
 
 class GatedhouseFactory:
@@ -32,6 +34,14 @@ class GatedhouseFactory:
                 f"GroupSource.start failed during Gatedhouse initialization: {e}"
             ) from e
         return gatedhouse
+
+    @staticmethod
+    def create_just_token_verifier(config: TokenVerifierConfig) -> Gatedhouse:
+        """Creates a lightweight Gatedhouse instance that only supports
+        token verification and requires no database backend."""
+        if config is None:
+            raise TypeError("config must not be None")
+        return JustTokenVerifierGatedhouse(config)
 
     @staticmethod
     def migrate(config: GatedhouseConfig) -> None:
