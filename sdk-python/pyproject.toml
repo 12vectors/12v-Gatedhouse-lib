@@ -12,7 +12,6 @@ authors = [{ name = "12 Vectors" }]
 maintainers = [{ name = "12 Vectors" }]
 keywords = ["authorization", "rbac", "permissions", "postgres", "jwt"]
 classifiers = [
-    "Private :: Do Not Upload",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",

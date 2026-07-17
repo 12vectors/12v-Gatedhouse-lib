@@ -1,5 +1,19 @@
 name: Release
 
+# Each SDK releases independently, triggered by its own tag prefix.
+# Every job publishes to the SDK's public registry AND attaches the
+# artifacts to a GitHub Release.
+#
+# Required one-time setup (all assume the repository is public):
+#   PyPI       — register this repo as a Trusted Publisher for the
+#                `gatedhouse` project on pypi.org (no secret needed).
+#   crates.io  — create an API token and store it as the
+#                CARGO_REGISTRY_TOKEN repository secret.
+#   Maven Central — verify the com.twelvevectors namespace on
+#                central.sonatype.com, then store portal-token secrets
+#                CENTRAL_USERNAME / CENTRAL_PASSWORD and signing-key
+#                secrets MAVEN_GPG_PRIVATE_KEY / MAVEN_GPG_PASSPHRASE.
+
 on:
   push:
     tags:
@@ -9,12 +23,14 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   python:
     if: startsWith(github.ref, 'refs/tags/python-v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # PyPI Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +43,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build --sdist --wheel
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk-python/dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -46,7 +67,13 @@ jobs:
 
       - name: Package crate
         working-directory: sdk-rust
-        run: cargo package --allow-dirty
+        run: cargo package
+
+      - name: Publish to crates.io
+        working-directory: sdk-rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -66,16 +93,19 @@ jobs:
         with:
           java-version: "17"
           distribution: temurin
-          server-id: github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Build and deploy to GitHub Packages
+      - name: Build, sign, and deploy to Maven Central
         working-directory: sdk-java
         env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mvn --batch-mode deploy
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: mvn --batch-mode deploy -P central
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

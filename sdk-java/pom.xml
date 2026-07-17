@@ -12,6 +12,27 @@
 
     <name>Gatedhouse</name>
     <description>Embedded authorization library</description>
+    <url>https://github.com/12vectors/12v-Gatedhouse-lib</url>
+
+    <!-- Required metadata for Maven Central publication. -->
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/license/mit</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+    <developers>
+        <developer>
+            <organization>12vectors.com</organization>
+            <organizationUrl>https://12vectors.com</organizationUrl>
+        </developer>
+    </developers>
+    <scm>
+        <connection>scm:git:https://github.com/12vectors/12v-Gatedhouse-lib.git</connection>
+        <developerConnection>scm:git:git@github.com:12vectors/12v-Gatedhouse-lib.git</developerConnection>
+        <url>https://github.com/12vectors/12v-Gatedhouse-lib</url>
+    </scm>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -79,4 +100,77 @@
             <url>https://maven.pkg.github.com/12vectors/12v-Gatedhouse-lib</url>
         </repository>
     </distributionManagement>
+
+    <profiles>
+        <!--
+            Maven Central publication. Activated with -P central by the
+            release workflow. Central requires sources + javadoc jars and
+            GPG signatures on every artifact; the central-publishing
+            plugin replaces the default deploy and uploads the bundle to
+            central.sonatype.com. Credentials come from the `central`
+            server entry (portal token) and GPG key material from the
+            environment — plain `mvn deploy` without this profile still
+            targets GitHub Packages and needs none of it.
+        -->
+        <profile>
+            <id>central</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.10.1</version>
+                        <configuration>
+                            <doclint>none</doclint>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.6.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
