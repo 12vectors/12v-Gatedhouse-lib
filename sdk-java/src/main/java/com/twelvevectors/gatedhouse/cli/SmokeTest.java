@@ -301,13 +301,16 @@ public final class SmokeTest {
         gh.hasPermission(IDENTITY_BOB,   ORG, SVC, RES_PROJ, ACT_READ);
         check("both cached: size 2", cache.size() == 2);
         cache.resetStats();
-        // Grant a harmless wildcard to viewer; no behavioral change.
-        gh.roleManager().grantPermission(ROLE_VIEWER, "neverusedsvc", null, null);
+        // Grant a harmless wildcard to viewer; no behavioral change. The
+        // granted service must exist in the catalog (FK on role_permissions).
+        gh.permissionCatalog().addService("smoketestneversvc", "Never-used service");
+        gh.roleManager().grantPermission(ROLE_VIEWER, "smoketestneversvc", null, null);
         check("wholesale invalidation fired",
             cache.wholesaleInvalidationCount() == 1);
         check("everything evicted: size 0", cache.size() == 0);
         // restore
-        gh.roleManager().revokePermission(ROLE_VIEWER, "neverusedsvc", null, null);
+        gh.roleManager().revokePermission(ROLE_VIEWER, "smoketestneversvc", null, null);
+        gh.permissionCatalog().removeService("smoketestneversvc");
 
         section("Cache: setStatus invalidates and new status reflected");
         gh.invalidateAllCache();
@@ -472,7 +475,7 @@ public final class SmokeTest {
             "DELETE FROM gatedhouse.roles WHERE key IN ('"
                 + ROLE_VIEWER + "', '" + ROLE_EDITOR + "', '"
                 + ROLE_READER + "', '" + ROLE_DEPLOYER + "')", // cascades to role_permissions, role_inherits
-            "DELETE FROM gatedhouse.services WHERE service = '" + SVC + "'" // cascades to resources, actions
+            "DELETE FROM gatedhouse.services WHERE service IN ('" + SVC + "', 'smoketestneversvc')" // cascades to resources, actions
         };
         try (Connection conn = database.getConnection();
              Statement st = conn.createStatement()) {

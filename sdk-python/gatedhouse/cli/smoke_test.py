@@ -269,17 +269,20 @@ def _run_cache_scenarios(gh: Gatedhouse, cache: InMemoryPermissionCache) -> None
     gh.role_manager().revoke_from_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER)
 
     _section("Cache: wholesale invalidation on grant_permission")
+    # The granted service must exist in the catalog (FK on role_permissions).
+    gh.permission_catalog().add_service("smoketestneversvc", "Never-used service")
     gh.invalidate_all_cache()
     cache.reset_stats()
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ)
     gh.has_permission(IDENTITY_BOB, ORG, SVC, RES_PROJ, ACT_READ)
     _check("both cached: size 2", cache.size() == 2)
     cache.reset_stats()
-    gh.role_manager().grant_permission(ROLE_VIEWER, "neverusedsvc", None, None)
+    gh.role_manager().grant_permission(ROLE_VIEWER, "smoketestneversvc", None, None)
     _check("wholesale invalidation fired",
            cache.wholesale_invalidation_count() == 1)
     _check("everything evicted: size 0", cache.size() == 0)
-    gh.role_manager().revoke_permission(ROLE_VIEWER, "neverusedsvc", None, None)
+    gh.role_manager().revoke_permission(ROLE_VIEWER, "smoketestneversvc", None, None)
+    gh.permission_catalog().remove_service("smoketestneversvc")
 
     _section("Cache: set_status invalidates and new status reflected")
     gh.invalidate_all_cache()
@@ -409,7 +412,8 @@ def _cleanup(database: _Db) -> None:
         f"'{ROLE_VIEWER}', '{ROLE_EDITOR}', "
         f"'{ROLE_READER}', '{ROLE_DEPLOYER}')",
         # cascades to resources, actions
-        f"DELETE FROM gatedhouse.services WHERE service = '{SVC}'",
+        f"DELETE FROM gatedhouse.services WHERE service IN "
+        f"('{SVC}', 'smoketestneversvc')",
     ]
     with database.connection() as conn, conn.cursor() as cur:
         for sql in statements:

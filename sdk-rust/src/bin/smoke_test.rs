@@ -394,19 +394,24 @@ fn run_cache_scenarios(gh: &dyn Gatedhouse, cache: &Arc<InMemoryPermissionCache>
     gh.role_manager().revoke_from_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER).unwrap();
 
     section("Cache: wholesale invalidation on grant_permission");
+    // The granted service must exist in the catalog (FK on role_permissions).
+    gh.permission_catalog()
+        .add_service("smoketestneversvc", Some("Never-used service"))
+        .unwrap();
     gh.invalidate_all_cache();
     cache.reset_stats();
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     gh.has_permission(IDENTITY_BOB, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     check("both cached: size 2", cache.size() == 2);
     cache.reset_stats();
-    gh.role_manager().grant_permission(ROLE_VIEWER, Some("neverusedsvc"), None, None).unwrap();
+    gh.role_manager().grant_permission(ROLE_VIEWER, Some("smoketestneversvc"), None, None).unwrap();
     check(
         "wholesale invalidation fired",
         cache.wholesale_invalidation_count() == 1,
     );
     check("everything evicted: size 0", cache.size() == 0);
-    gh.role_manager().revoke_permission(ROLE_VIEWER, Some("neverusedsvc"), None, None).unwrap();
+    gh.role_manager().revoke_permission(ROLE_VIEWER, Some("smoketestneversvc"), None, None).unwrap();
+    gh.permission_catalog().remove_service("smoketestneversvc").unwrap();
 
     section("Cache: set_status invalidates and new status reflected");
     gh.invalidate_all_cache();
@@ -579,7 +584,7 @@ fn cleanup(database: &dyn Database) -> Result<(), postgres::Error> {
         "DELETE FROM gatedhouse.roles WHERE key IN \
          ('smoketestviewer','smoketesteditor','smoketestreader','smoketestdeployer')",
         // cascades to resources, actions
-        "DELETE FROM gatedhouse.services WHERE service = 'smoketestsvc'",
+        "DELETE FROM gatedhouse.services WHERE service IN ('smoketestsvc', 'smoketestneversvc')",
     ];
     for sql in statements {
         conn.execute(*sql, &[])?;

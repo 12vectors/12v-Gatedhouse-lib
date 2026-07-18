@@ -68,7 +68,7 @@ impl MembershipManager for DefaultMembershipManager {
         conn.execute(
             "INSERT INTO gatedhouse.memberships \
              (id, identity_id, org_id, entity_type, status) \
-             VALUES ($1, $2, $3, $4::gatedhouse.entity_type, \
+             VALUES ($1, $2, $3, $4::text::gatedhouse.entity_type, \
                      'active'::gatedhouse.membership_status)",
             &[&id, &identity_id, &org_id, &entity_type_str],
         )?;
@@ -111,7 +111,7 @@ impl MembershipManager for DefaultMembershipManager {
         let status_str = status.db_value();
         conn.execute(
             "UPDATE gatedhouse.memberships \
-             SET status = $1::gatedhouse.membership_status, updated_at = NOW() \
+             SET status = $1::text::gatedhouse.membership_status, updated_at = NOW() \
              WHERE identity_id = $2 AND org_id = $3",
             &[&status_str, &identity_id, &org_id],
         )?;
