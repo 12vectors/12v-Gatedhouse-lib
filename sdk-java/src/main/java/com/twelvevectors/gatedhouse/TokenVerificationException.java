@@ -5,7 +5,7 @@
 package com.twelvevectors.gatedhouse;
 
 /**
- * Thrown by {@link TokenVerifier#verify} when a JWT fails verification.
+ * Thrown by {@link Gatedhouse#verifyToken(String)} when a JWT fails verification.
  * The {@link #reason} enables callers to branch on the failure mode —
  * critical for client applications that need to distinguish "token expired,
  * try refresh" from "token forged, reject and re-authenticate".
