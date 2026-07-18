@@ -22,6 +22,9 @@ attribute) and add the same security headers to every response.
 Java's ``HttpSession`` has no WSGI counterpart, so ``GatedhouseWebFilter``
 reads a ``MutableMapping`` the host's session middleware exposes in the
 environ (``session_environ_key``, default ``"gatedhouse.session"``).
+
+ASGI hosts (FastAPI, Starlette, Litestar, Quart) should use the native
+counterparts in :mod:`gatedhouse.asgi` instead of adapting these.
 """
 
 from __future__ import annotations

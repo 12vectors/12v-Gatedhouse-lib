@@ -94,7 +94,15 @@ public final class AuthCallbackServlet extends HttpServlet {
 
 ### Python Web & Sphinx SSO Integration
 
-The Python SDK ships the same integration surface, adapted to Python's platform-neutral web standard (WSGI, PEP 3333) with zero extra dependencies:
+The Python SDK ships the same integration surface for **both Python web standards**, with zero extra dependencies: WSGI middleware (PEP 3333) at the top level, and native ASGI counterparts in `gatedhouse.asgi` for FastAPI, Starlette, Litestar, Quart, and raw uvicorn apps — same class names, same contract (context key, 401 JSON body, security headers, redirect semantics), so downstream apps never have to improvise their own token middleware. The ASGI variants run token verification in a thread-pool executor so JWKS fetches never block the event loop, and expose the verified context as `request.state.gatedhouse_context` in Starlette/FastAPI:
+
+```python
+from gatedhouse.asgi import GatedhouseApiFilter
+
+app.add_middleware(GatedhouseApiFilter, gatedhouse=gh)  # FastAPI / Starlette
+```
+
+The WSGI components:
 
 *   **`SphinxClient`**: The same OAuth 2.0 helper (code exchange, client credentials, token exchange, refresh, introspection, login URLs) built on stdlib `urllib`.
 *   **`GatedhouseWebFilter`**: WSGI middleware guarding browser-facing pages. Reads the token from a session mapping the host's session middleware exposes in the environ (`session_environ_key`, default `"gatedhouse.session"`) and 302-redirects to `login_path` on failure.

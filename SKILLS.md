@@ -297,8 +297,8 @@ Same components in all three SDKs, adapted to each platform's web standard: Java
 | Build from subject | `GatedContext.fromSubject(subject)` | `GatedContext.from_subject(subject)` | `GatedContext::from_subject(&subject)` |
 | Claim helpers | `isAdmin()` / `isHuman()` / `isDelegated()` / `hasScope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` |
 | OAuth helper | `SphinxClient` (`java.net.http`) | `SphinxClient` (stdlib `urllib`) | `SphinxClient` (`ureq`) → `Result<_, SphinxError>` |
-| API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
-| Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI, reads session mapping from environ) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
+| API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) / `gatedhouse.asgi.GatedhouseApiFilter` (ASGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
+| Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI) / `gatedhouse.asgi.GatedhouseWebFilter` (ASGI, reads `scope["session"]`) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
 | Privilege asserts | `requireAdmin/requireHuman/requireScope` (throw `ForbiddenException`) | `require_admin/require_human/require_scope` (raise `ForbiddenException`) | `require_admin/require_human/require_scope` (return `FilterError::Forbidden`) |
 | Verify-only instance | `GatedhouseFactory.createJustTokenVerifier(cfg)` | `GatedhouseFactory.create_just_token_verifier(cfg)` | `GatedhouseFactory::create_just_token_verifier(cfg)` |
 
