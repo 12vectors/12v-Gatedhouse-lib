@@ -4,6 +4,9 @@ version = "0.2.0"
 edition = "2021"
 description = "Embedded authorization library — Rust SDK"
 license = "MIT"
+repository = "https://github.com/12vectors/12v-Gatedhouse-lib"
+keywords = ["authorization", "rbac", "permissions", "postgres", "jwt"]
+categories = ["authentication"]
 rust-version = "1.74"
 
 [dependencies]
