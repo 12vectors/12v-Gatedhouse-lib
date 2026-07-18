@@ -1,8 +1,9 @@
 name: Release
 
-# Each SDK releases independently, triggered by its own tag prefix.
-# Every job publishes to the SDK's public registry AND attaches the
-# artifacts to a GitHub Release.
+# Each SDK releases independently, triggered by its own tag prefix —
+# or manually via workflow_dispatch (pick the SDK and version; the
+# GitHub Release step then creates the tag). Every job publishes to the
+# SDK's public registry AND attaches the artifacts to a GitHub Release.
 #
 # Required one-time setup (all assume the repository is public):
 #   PyPI       — register this repo as a Trusted Publisher for the
@@ -20,14 +21,32 @@ on:
       - "python-v*"
       - "rust-v*"
       - "java-v*"
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: "Which SDK to release"
+        required: true
+        type: choice
+        options:
+          - python
+          - rust
+          - java
+      version:
+        description: "Version to release (e.g. 0.3.0) — must match the SDK's manifest"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   python:
-    if: startsWith(github.ref, 'refs/tags/python-v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/python-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sdk == 'python')
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('python-v{0}', inputs.version) || github.ref_name }}
     permissions:
       contents: write
       id-token: write # PyPI Trusted Publishing (OIDC)
@@ -52,14 +71,18 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: sdk-python/dist/*
 
   rust:
-    if: startsWith(github.ref, 'refs/tags/rust-v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/rust-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sdk == 'rust')
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('rust-v{0}', inputs.version) || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -78,14 +101,18 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: sdk-rust/target/package/*.crate
 
   java:
-    if: startsWith(github.ref, 'refs/tags/java-v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/java-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sdk == 'java')
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('java-v{0}', inputs.version) || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,7 +137,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: sdk-java/target/*.jar
