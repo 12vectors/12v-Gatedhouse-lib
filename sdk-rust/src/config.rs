@@ -8,15 +8,17 @@ use std::sync::Arc;
 
 use crate::database::Database;
 use crate::group_source::{GroupSource, LocalGroupSource};
-use crate::permission_cache::{InMemoryPermissionCache, PermissionCache};
+use crate::permission_cache::PermissionCache;
 use crate::token_verifier::TokenVerifierConfig;
 
 /// Mirrors the Java `GatedhouseConfig`. Only `database` is required;
-/// every other component has a sensible default.
+/// every other component has a sensible default. Permission caching is
+/// opt-in: with no cache configured (the default), every permission
+/// read goes straight to the database with zero cache overhead.
 pub struct GatedhouseConfig {
     pub(crate) database: Arc<dyn Database>,
     pub(crate) group_source: Arc<dyn GroupSource>,
-    pub(crate) permission_cache: Arc<dyn PermissionCache>,
+    pub(crate) permission_cache: Option<Arc<dyn PermissionCache>>,
     pub(crate) token_verifier: Option<TokenVerifierConfig>,
 }
 
@@ -34,8 +36,11 @@ impl GatedhouseConfig {
         &self.database
     }
 
-    pub fn permission_cache(&self) -> &Arc<dyn PermissionCache> {
-        &self.permission_cache
+    /// The configured permission cache, or `None` if the host did not
+    /// opt in — in which case caching is disabled and every permission
+    /// read goes to the database.
+    pub fn permission_cache(&self) -> Option<&Arc<dyn PermissionCache>> {
+        self.permission_cache.as_ref()
     }
 }
 
@@ -54,9 +59,13 @@ impl GatedhouseConfigBuilder {
         self
     }
 
-    /// Optional. Defaults to [`InMemoryPermissionCache`] with a 60-second
-    /// TTL. Pass a custom implementation to back the cache with Redis,
-    /// Memcached, or any other shared store.
+    /// Optional — caching is opt-in and disabled by default; when unset,
+    /// every permission read goes straight to the database with zero
+    /// cache overhead. Pass
+    /// [`InMemoryPermissionCache`](crate::permission_cache::InMemoryPermissionCache)
+    /// for a process-local cache (60-second TTL by default), or a custom
+    /// implementation to back the cache with Redis, Memcached, or any
+    /// other shared store.
     pub fn permission_cache(mut self, permission_cache: Arc<dyn PermissionCache>) -> Self {
         self.permission_cache = Some(permission_cache);
         self
@@ -76,9 +85,7 @@ impl GatedhouseConfigBuilder {
             group_source: self
                 .group_source
                 .unwrap_or_else(|| Arc::new(LocalGroupSource)),
-            permission_cache: self
-                .permission_cache
-                .unwrap_or_else(|| Arc::new(InMemoryPermissionCache::new())),
+            permission_cache: self.permission_cache,
             token_verifier: self.token_verifier,
         }
     }

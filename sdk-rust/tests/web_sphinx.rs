@@ -88,8 +88,8 @@ impl Gatedhouse for StubGh {
     }
     fn invalidate_cache(&self, _: &str, _: &str) {}
     fn invalidate_all_cache(&self) {}
-    fn set_cache_bypass(&self, _: bool) {}
-    fn is_cache_bypassed(&self) -> bool {
+    fn set_cache_enabled(&self, _: bool) {}
+    fn is_cache_enabled(&self) -> bool {
         false
     }
 }
@@ -177,7 +177,9 @@ fn just_token_verifier() {
         "i",
         "a",
     ));
-    assert!(!gh.is_cache_bypassed());
+    assert!(!gh.is_cache_enabled());
+    gh.set_cache_enabled(true); // no cache exists — must stay disabled
+    assert!(!gh.is_cache_enabled());
     gh.invalidate_all_cache();
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = gh.role_manager();

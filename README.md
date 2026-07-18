@@ -190,7 +190,7 @@ let ok = gh.has_permission("alice", "acme", "workspace", "projects", "read")?; /
 
 ## Caveat for multi-app deployments — caches are process-local
 
-Each SDK ships an in-memory permission cache (60-second TTL) by default. The cache is **process-local**: two applications pointing at the same database hold **independent** cache copies. A write through one app invalidates *that app's* cache only — the other app keeps serving its existing cached entry until the TTL expires.
+Permission caching is **opt-in**: by default no cache is configured and every check queries the database directly. Each SDK ships an in-memory permission cache (60-second TTL) you can enable by passing it into the config. When enabled, the cache is **process-local**: two applications pointing at the same database hold **independent** cache copies. A write through one app invalidates *that app's* cache only — the other app keeps serving its existing cached entry until the TTL expires.
 
 ```
 T+0s   App A: gh.role_manager().assign_to_identity("alice", "acme", "editor")
@@ -210,7 +210,7 @@ Schema lives in `gatedhouse.*` (separate Postgres schema). Each SDK embeds the s
 
 | SDK | Command |
 |---|---|
-| Java | `java -cp gatedhouse-0.2.0.jar:postgresql-42.7.4.jar com.twelvevectors.gatedhouse.cli.Migrate <jdbc-url> <user> <pwd>` |
+| Java | `java -cp gatedhouse-0.3.0.jar:postgresql-42.7.4.jar com.twelvevectors.gatedhouse.cli.Migrate <jdbc-url> <user> <pwd>` |
 | Python | `python -m gatedhouse.cli.migrate "<conninfo>"` |
 | Rust | `cargo run --bin gatedhouse-migrate -- "<conninfo>"` |
 

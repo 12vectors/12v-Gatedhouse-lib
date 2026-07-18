@@ -84,26 +84,46 @@ pub trait Gatedhouse: Send + Sync {
 
     fn invalidate_cache(&self, identity_id: &str, org_id: &str);
     fn invalidate_all_cache(&self);
-    fn set_cache_bypass(&self, bypass: bool);
-    fn is_cache_bypassed(&self) -> bool;
+    /// Runtime switch for the permission cache. Caching is opt-in: it is
+    /// active only when a cache was configured via
+    /// `GatedhouseConfigBuilder::permission_cache` — with no cache
+    /// configured (the default) this method is a no-op and
+    /// [`is_cache_enabled`](Self::is_cache_enabled) stays `false`.
+    ///
+    /// A configured cache starts enabled; setting `false` is the runtime
+    /// kill switch (reads skip the cache entirely and do not populate
+    /// it; writes still invalidate so the cache stays consistent if
+    /// re-enabled).
+    fn set_cache_enabled(&self, enabled: bool);
+
+    /// `true` if a cache is configured and caching is currently enabled.
+    fn is_cache_enabled(&self) -> bool;
 }
 
 pub(crate) struct DefaultGatedhouse {
     database: Arc<dyn Database>,
+    // The configured cache, or a no-op stand-in when caching is off. The
+    // stand-in keeps the managers' write-path invalidation unconditional;
+    // the read path never touches it (guarded by cache_enabled below).
     cache: Arc<dyn PermissionCache>,
+    cache_configured: bool,
     permission_catalog: DefaultPermissionCatalog,
     role_manager: DefaultRoleManager,
     membership_manager: DefaultMembershipManager,
     group_manager: DefaultGroupManager,
     jwt: Option<JwtVerification>,
     group_source: Arc<dyn GroupSource>,
-    cache_bypass: AtomicBool,
+    cache_enabled: AtomicBool,
 }
 
 impl DefaultGatedhouse {
     pub(crate) fn new(config: GatedhouseConfig) -> Self {
         let database = config.database.clone();
-        let cache = config.permission_cache.clone();
+        let cache_configured = config.permission_cache.is_some();
+        let cache: Arc<dyn PermissionCache> = config
+            .permission_cache
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoOpCache));
         let permission_catalog = DefaultPermissionCatalog::new(database.clone(), cache.clone());
         let role_manager = DefaultRoleManager::new(database.clone(), cache.clone());
         let membership_manager = DefaultMembershipManager::new(database.clone(), cache.clone());
@@ -113,13 +133,14 @@ impl DefaultGatedhouse {
         Self {
             database,
             cache,
+            cache_configured,
             permission_catalog,
             role_manager,
             membership_manager,
             group_manager,
             jwt,
             group_source: config.group_source,
-            cache_bypass: AtomicBool::new(false),
+            cache_enabled: AtomicBool::new(cache_configured),
         }
     }
 
@@ -128,7 +149,9 @@ impl DefaultGatedhouse {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
-        if self.cache_bypass.load(Ordering::Relaxed) {
+        if !self.cache_enabled.load(Ordering::Relaxed) {
+            // No cache configured, or caching switched off at runtime:
+            // skip the cache entirely on reads and do not populate it.
             return self.load_effective_permissions(identity_id, org_id);
         }
         if let Some(hit) = self.cache.get(identity_id, org_id) {
@@ -250,13 +273,29 @@ impl Gatedhouse for DefaultGatedhouse {
         self.cache.invalidate_all();
     }
 
-    fn set_cache_bypass(&self, bypass: bool) {
-        self.cache_bypass.store(bypass, Ordering::Relaxed);
+    fn set_cache_enabled(&self, enabled: bool) {
+        self.cache_enabled
+            .store(enabled && self.cache_configured, Ordering::Relaxed);
     }
 
-    fn is_cache_bypassed(&self) -> bool {
-        self.cache_bypass.load(Ordering::Relaxed)
+    fn is_cache_enabled(&self) -> bool {
+        self.cache_enabled.load(Ordering::Relaxed)
     }
+}
+
+/// Stand-in used when no cache is configured; every method is a no-op.
+struct NoOpCache;
+
+impl PermissionCache for NoOpCache {
+    fn get(&self, _identity_id: &str, _org_id: &str) -> Option<Vec<EffectivePermission>> {
+        None
+    }
+
+    fn put(&self, _identity_id: &str, _org_id: &str, _permissions: Vec<EffectivePermission>) {}
+
+    fn invalidate(&self, _identity_id: &str, _org_id: &str) {}
+
+    fn invalidate_all(&self) {}
 }
 
 impl Drop for DefaultGatedhouse {

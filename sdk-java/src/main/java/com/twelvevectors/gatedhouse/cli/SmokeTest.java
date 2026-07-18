@@ -363,36 +363,36 @@ public final class SmokeTest {
         check("after invalidateAllCache: wholesale=1",
             cache.wholesaleInvalidationCount() == 1);
 
-        section("Cache: kill switch — bypass at runtime");
+        section("Cache: kill switch — disable at runtime");
         gh.invalidateAllCache();
         cache.resetStats();
-        check("bypass starts off", !gh.isCacheBypassed());
+        check("configured cache starts enabled", gh.isCacheEnabled());
         // Warm the cache normally
         gh.hasPermission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ);
         check("warm-up: 1 miss + 1 put + size 1",
             cache.missCount() == 1 && cache.putCount() == 1 && cache.size() == 1);
-        // Engage bypass
-        gh.setCacheBypass(true);
-        check("bypass is on", gh.isCacheBypassed());
+        // Disable caching at runtime
+        gh.setCacheEnabled(false);
+        check("cache is disabled", !gh.isCacheEnabled());
         cache.resetStats();
-        // Reads under bypass: no get(), no put(), size unchanged
+        // Reads while disabled: no get(), no put(), size unchanged
         gh.hasPermission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ);
         gh.hasPermission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_WRITE);
         gh.hasPermission(IDENTITY_BOB,   ORG, SVC, RES_PROJ, ACT_READ);
-        check("bypass: zero hits and zero misses",
+        check("disabled: zero hits and zero misses",
             cache.hitCount() == 0 && cache.missCount() == 0);
-        check("bypass: zero puts (cache not populated)",
+        check("disabled: zero puts (cache not populated)",
             cache.putCount() == 0);
-        check("bypass: cache size unchanged from warm-up",
+        check("disabled: cache size unchanged from warm-up",
             cache.size() == 1);
-        // While bypass is on, writes still invalidate (consistency on resume)
+        // While disabled, writes still invalidate (consistency on re-enable)
         gh.roleManager().assignToIdentity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER);
-        check("bypass: writes still invalidate cache",
+        check("disabled: writes still invalidate cache",
             cache.targetedInvalidationCount() == 1);
         gh.roleManager().revokeFromIdentity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER);
-        // Disengage bypass and verify caching resumes
-        gh.setCacheBypass(false);
-        check("bypass is off", !gh.isCacheBypassed());
+        // Re-enable and verify caching resumes
+        gh.setCacheEnabled(true);
+        check("cache is enabled again", gh.isCacheEnabled());
         cache.resetStats();
         gh.hasPermission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ);
         check("resumed: cold read = 1 miss",
