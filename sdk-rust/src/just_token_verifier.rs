@@ -98,9 +98,9 @@ impl Gatedhouse for JustTokenVerifierGatedhouse {
 
     fn invalidate_all_cache(&self) {}
 
-    fn set_cache_bypass(&self, _bypass: bool) {}
+    fn set_cache_enabled(&self, _enabled: bool) {}
 
-    fn is_cache_bypassed(&self) -> bool {
+    fn is_cache_enabled(&self) -> bool {
         false
     }
 }

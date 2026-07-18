@@ -17,18 +17,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class DefaultGatedhouse implements Gatedhouse {
 
     private final GatedhouseConfig config;
+    // The configured cache, or a no-op stand-in when caching is off. The
+    // stand-in keeps the managers' write-path invalidation unconditional;
+    // the read path never touches it (guarded by cacheEnabled below).
     private final PermissionCache cache;
+    private final boolean cacheConfigured;
     private final PermissionCatalog permissionCatalog;
     private final RoleManager roleManager;
     private final MembershipManager membershipManager;
     private final GroupManager groupManager;
     private final JwtVerification jwtVerification;  // null if unconfigured
     private final AtomicBoolean closed = new AtomicBoolean(false);
-    private final AtomicBoolean cacheBypass = new AtomicBoolean(false);
+    private final AtomicBoolean cacheEnabled;
 
     DefaultGatedhouse(GatedhouseConfig config) {
         this.config = config;
-        this.cache = config.permissionCache();
+        this.cacheConfigured = config.permissionCache() != null;
+        this.cache = cacheConfigured ? config.permissionCache() : NoOpCache.INSTANCE;
+        this.cacheEnabled = new AtomicBoolean(cacheConfigured);
         this.permissionCatalog = new DefaultPermissionCatalog(config.database(), cache);
         this.roleManager = new DefaultRoleManager(config.database(), cache);
         this.membershipManager = new DefaultMembershipManager(config.database(), cache);
@@ -122,22 +128,23 @@ final class DefaultGatedhouse implements Gatedhouse {
     }
 
     @Override
-    public void setCacheBypass(boolean bypass) {
-        cacheBypass.set(bypass);
+    public void setCacheEnabled(boolean enabled) {
+        cacheEnabled.set(enabled && cacheConfigured);
     }
 
     @Override
-    public boolean isCacheBypassed() {
-        return cacheBypass.get();
+    public boolean isCacheEnabled() {
+        return cacheEnabled.get();
     }
 
     // ---- internals --------------------------------------------------------
 
     private List<EffectivePermission> effectivePermissionsCached(
             String identityId, String orgId) {
-        if (cacheBypass.get()) {
-            // Kill switch: skip the cache entirely on reads. We still don't
-            // populate it — when bypass is cleared, the cache starts cold.
+        if (!cacheEnabled.get()) {
+            // No cache configured, or caching switched off at runtime:
+            // skip the cache entirely on reads. We don't populate it either
+            // — when caching is re-enabled, the cache starts cold.
             return loadEffectivePermissions(identityId, orgId);
         }
         Optional<List<EffectivePermission>> hit = cache.get(identityId, orgId);
@@ -209,5 +216,25 @@ final class DefaultGatedhouse implements Gatedhouse {
         return (grant.service()  == null || grant.service().equals(service))
             && (grant.resource() == null || grant.resource().equals(resource))
             && (grant.action()   == null || grant.action().equals(action));
+    }
+
+    /** Stand-in used when no cache is configured; every method is a no-op. */
+    private static final class NoOpCache implements PermissionCache {
+
+        static final NoOpCache INSTANCE = new NoOpCache();
+
+        @Override
+        public Optional<List<EffectivePermission>> get(String identityId, String orgId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void put(String identityId, String orgId, List<EffectivePermission> permissions) {}
+
+        @Override
+        public void invalidate(String identityId, String orgId) {}
+
+        @Override
+        public void invalidateAll() {}
     }
 }

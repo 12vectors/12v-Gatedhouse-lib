@@ -122,7 +122,9 @@ class JustTokenVerifierTest(unittest.TestCase):
             gh.role_manager()
         with self.assertRaises(NotImplementedError):
             gh.has_permission("id", "org", "s", "r", "a")
-        self.assertFalse(gh.is_cache_bypassed())
+        self.assertFalse(gh.is_cache_enabled())
+        gh.set_cache_enabled(True)  # no cache exists — must stay disabled
+        self.assertFalse(gh.is_cache_enabled())
         gh.invalidate_all_cache()  # no-op, must not raise
         gh.close()
 

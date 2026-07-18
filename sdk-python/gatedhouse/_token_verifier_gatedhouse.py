@@ -72,10 +72,10 @@ class JustTokenVerifierGatedhouse(Gatedhouse):
     def invalidate_all_cache(self) -> None:
         pass
 
-    def set_cache_bypass(self, bypass: bool) -> None:
+    def set_cache_enabled(self, enabled: bool) -> None:
         pass
 
-    def is_cache_bypassed(self) -> bool:
+    def is_cache_enabled(self) -> bool:
         return False
 
     # ---- lifecycle ----------------------------------------------------------

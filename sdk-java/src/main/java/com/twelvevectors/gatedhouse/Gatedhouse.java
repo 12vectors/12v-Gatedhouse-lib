@@ -101,21 +101,28 @@ public interface Gatedhouse extends AutoCloseable {
     void invalidateAllCache();
 
     /**
-     * Runtime kill switch. When set to {@code true}, every
-     * {@link #hasPermission} and {@link #getEffectivePermissions} call
-     * skips the cache entirely — neither read from it nor populate it.
-     * Each call goes straight to the database. Writes through the
-     * library's manager APIs continue to invalidate cache entries, so
-     * the cache stays consistent if and when the bypass is later cleared.
+     * Runtime switch for the permission cache. Caching is opt-in: it is
+     * active only when a {@link PermissionCache} was configured via
+     * {@link GatedhouseConfig.Builder#permissionCache} — with no cache
+     * configured (the default), every read goes straight to the database
+     * and this method is a no-op ({@link #isCacheEnabled} stays
+     * {@code false}).
      *
-     * <p>Intended for emergency operations and debugging — not normal use.
-     * Defaults to {@code false}. Thread-safe: applies on the next read in
-     * any thread once set.
+     * <p>When a cache is configured it starts enabled. Setting
+     * {@code false} is the runtime kill switch: every
+     * {@link #hasPermission} and {@link #getEffectivePermissions} call
+     * skips the cache entirely — neither reads from it nor populates it.
+     * Writes through the library's manager APIs continue to invalidate
+     * cache entries, so the cache stays consistent if caching is later
+     * re-enabled.
+     *
+     * <p>Thread-safe: applies on the next read in any thread once set.
      */
-    void setCacheBypass(boolean bypass);
+    void setCacheEnabled(boolean enabled);
 
     /**
-     * @return {@code true} if cache bypass is currently active
+     * @return {@code true} if a {@link PermissionCache} is configured and
+     *     caching is currently enabled
      */
-    boolean isCacheBypassed();
+    boolean isCacheEnabled();
 }

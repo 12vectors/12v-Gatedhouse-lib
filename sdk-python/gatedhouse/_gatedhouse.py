@@ -18,6 +18,7 @@ from ._exceptions import GatedhouseDatabaseError
 from ._group_manager import DefaultGroupManager, GroupManager
 from ._jwt_verification import JwtVerification
 from ._membership_manager import DefaultMembershipManager, MembershipManager
+from ._permission_cache import PermissionCache
 from ._permission_catalog import DefaultPermissionCatalog, PermissionCatalog
 from ._role_manager import DefaultRoleManager, RoleManager
 from ._types import AuthenticatedSubject, EffectivePermission
@@ -102,10 +103,10 @@ class Gatedhouse(ABC):
     def invalidate_all_cache(self) -> None: ...
 
     @abstractmethod
-    def set_cache_bypass(self, bypass: bool) -> None: ...
+    def set_cache_enabled(self, enabled: bool) -> None: ...
 
     @abstractmethod
-    def is_cache_bypassed(self) -> bool: ...
+    def is_cache_enabled(self) -> bool: ...
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -123,7 +124,16 @@ class DefaultGatedhouse(Gatedhouse):
 
     def __init__(self, config: GatedhouseConfig) -> None:
         self._config = config
-        self._cache = config.permission_cache
+        # The configured cache, or a no-op stand-in when caching is off.
+        # The stand-in keeps the managers' write-path invalidation
+        # unconditional; the read path never touches it (guarded by
+        # _cache_enabled below).
+        self._cache_configured = config.permission_cache is not None
+        self._cache = (
+            config.permission_cache
+            if config.permission_cache is not None
+            else _NoOpPermissionCache()
+        )
         self._permission_catalog = DefaultPermissionCatalog(
             config.database, self._cache)
         self._role_manager = DefaultRoleManager(config.database, self._cache)
@@ -137,8 +147,8 @@ class DefaultGatedhouse(Gatedhouse):
         )
         self._closed = False
         self._close_lock = Lock()
-        self._cache_bypass = False
-        self._bypass_lock = Lock()
+        self._cache_enabled = self._cache_configured
+        self._cache_enabled_lock = Lock()
 
     # ---- accessors --------------------------------------------------------
 
@@ -196,13 +206,13 @@ class DefaultGatedhouse(Gatedhouse):
     def invalidate_all_cache(self) -> None:
         self._cache.invalidate_all()
 
-    def set_cache_bypass(self, bypass: bool) -> None:
-        with self._bypass_lock:
-            self._cache_bypass = bypass
+    def set_cache_enabled(self, enabled: bool) -> None:
+        with self._cache_enabled_lock:
+            self._cache_enabled = enabled and self._cache_configured
 
-    def is_cache_bypassed(self) -> bool:
-        with self._bypass_lock:
-            return self._cache_bypass
+    def is_cache_enabled(self) -> bool:
+        with self._cache_enabled_lock:
+            return self._cache_enabled
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -217,10 +227,10 @@ class DefaultGatedhouse(Gatedhouse):
 
     def _effective_permissions_cached(self, identity_id: str,
                                       org_id: str) -> list[EffectivePermission]:
-        if self.is_cache_bypassed():
-            # Kill switch: skip the cache entirely on reads. We still
-            # don't populate it — when bypass is cleared, the cache
-            # starts cold.
+        if not self.is_cache_enabled():
+            # No cache configured, or caching switched off at runtime:
+            # skip the cache entirely on reads. We don't populate it
+            # either — when caching is re-enabled, the cache starts cold.
             return self._load_effective_permissions(identity_id, org_id)
         hit = self._cache.get(identity_id, org_id)
         if hit is not None:
@@ -249,3 +259,20 @@ class DefaultGatedhouse(Gatedhouse):
             raise GatedhouseDatabaseError(
                 f"_load_effective_permissions failed: {e}"
             ) from e
+
+
+class _NoOpPermissionCache(PermissionCache):
+    """Stand-in used when no cache is configured; every method is a no-op."""
+
+    def get(self, identity_id: str, org_id: str) -> list[EffectivePermission] | None:
+        return None
+
+    def put(self, identity_id: str, org_id: str,
+            permissions: list[EffectivePermission]) -> None:
+        pass
+
+    def invalidate(self, identity_id: str, org_id: str) -> None:
+        pass
+
+    def invalidate_all(self) -> None:
+        pass

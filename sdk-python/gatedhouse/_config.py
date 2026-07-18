@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from ._database import Database
 from ._group_source import GroupSource, LocalGroupSource
-from ._permission_cache import InMemoryPermissionCache, PermissionCache
+from ._permission_cache import PermissionCache
 from ._token_verifier_config import TokenVerifierConfig
 
 
@@ -19,11 +19,15 @@ class GatedhouseConfig:
     """Mirrors the Java ``GatedhouseConfig``.
 
     Only ``database`` is required. All other components have sensible
-    defaults: a process-local ``InMemoryPermissionCache`` (60s TTL),
-    a no-op ``LocalGroupSource``, and JWT verification disabled.
+    defaults: a no-op ``LocalGroupSource``, JWT verification disabled,
+    and **no permission cache** — caching is opt-in; when
+    ``permission_cache`` is left unset, every permission read goes
+    straight to the database with zero cache overhead. Pass
+    ``InMemoryPermissionCache()`` (60s TTL) or a custom
+    ``PermissionCache`` to enable caching.
     """
 
     database: Database
     group_source: GroupSource = field(default_factory=LocalGroupSource)
-    permission_cache: PermissionCache = field(default_factory=InMemoryPermissionCache)
+    permission_cache: PermissionCache | None = None
     token_verifier: TokenVerifierConfig | None = None

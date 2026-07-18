@@ -70,10 +70,10 @@ final class JustTokenVerifierGatedhouse implements Gatedhouse {
     public void invalidateAllCache() {}
 
     @Override
-    public void setCacheBypass(boolean bypass) {}
+    public void setCacheEnabled(boolean enabled) {}
 
     @Override
-    public boolean isCacheBypassed() {
+    public boolean isCacheEnabled() {
         return false;
     }
 }

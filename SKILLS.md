@@ -4,7 +4,7 @@ Embedded authorization library. Provides RBAC with role inheritance, group-based
 
 > Three SDKs are maintained in this repo from a single Postgres schema (V001 is byte-identical across all three). The **Java SDK is the reference implementation**; **Python** and **Rust** are faithful ports with the same architecture, the same fixture-named smoke test, and the same advisory-lock key so any combination of them can migrate or read the same database.
 >
-> **One caveat to know up front:** each SDK's default permission cache is **process-local**. Two apps using different (or the same) SDK against one database hold independent cache copies and can briefly disagree after a write, until the TTL expires. See [Permission Cache → Process-local by default](#process-local-by-default--caveat-for-multi-app-deployments) for the failure mode and how to fix it with a shared cache.
+> **One caveat to know up front:** permission caching is **opt-in** (no cache is configured by default), and the bundled `InMemoryPermissionCache` is **process-local**. Two apps that enable it against one database hold independent cache copies and can briefly disagree after a write, until the TTL expires. See [Permission Cache → Process-local — caveat for multi-app deployments](#process-local--caveat-for-multi-app-deployments) for the failure mode and how to fix it with a shared cache.
 >
 > | SDK | Path | Class names | Method style |
 > |---|---|---|---|
@@ -45,7 +45,7 @@ Embedded authorization library. Provides RBAC with role inheritance, group-based
 <dependency>
   <groupId>com.twelvevectors</groupId>
   <artifactId>gatedhouse</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 
@@ -68,7 +68,7 @@ The library does **not** auto-create its schema at application startup. The bund
 
 ```bash
 # Java
-java -cp gatedhouse-0.2.0.jar:postgresql-42.7.4.jar \
+java -cp gatedhouse-0.3.0.jar:postgresql-42.7.4.jar \
      com.twelvevectors.gatedhouse.cli.Migrate \
      jdbc:postgresql://localhost:5432/yourdb yourdbuser yourpassword
 
@@ -322,13 +322,15 @@ All three SDKs expose the **same nine reasons** so the host can branch on the fa
 
 ### Cache configuration
 
+Caching is opt-in: it is active only when a cache is passed into the config (`.permissionCache(...)` / `permission_cache=...` / `.permission_cache(...)`). With no cache configured — the default — every read goes straight to the database with zero cache overhead.
+
 | Java | Python | Rust |
 |---|---|---|
 | `new InMemoryPermissionCache(Duration.ofSeconds(60))` | `InMemoryPermissionCache(timedelta(seconds=60))` | `InMemoryPermissionCache::with_ttl(Duration::from_secs(60))` |
 | `new JCachePermissionCache(myJCache)` | *(host implements `PermissionCache` directly)* | *(host implements `PermissionCache` directly)* |
 | `gh.invalidateCache(id, org)` | `gh.invalidate_cache(id, org)` | `gh.invalidate_cache(id, org)` |
 | `gh.invalidateAllCache()` | `gh.invalidate_all_cache()` | `gh.invalidate_all_cache()` |
-| `gh.setCacheBypass(true)` / `isCacheBypassed()` | `gh.set_cache_bypass(True)` / `is_cache_bypassed()` | `gh.set_cache_bypass(true)` / `is_cache_bypassed()` |
+| `gh.setCacheEnabled(false)` / `isCacheEnabled()` | `gh.set_cache_enabled(False)` / `is_cache_enabled()` | `gh.set_cache_enabled(false)` / `is_cache_enabled()` |
 
 ### Smoke tests
 
@@ -828,15 +830,33 @@ The library is transport-agnostic and ships no concrete event-driven sources —
 
 ## Permission Cache
 
-Every `hasPermission` and `getEffectivePermissions` call goes through a cache keyed on `(identityId, orgId)`. The cached value is the full effective-permission set for that identity in that org, so a single DB round trip serves every subsequent permission question for the identity until the entry is invalidated or expires. `hasPermission` filters the cached list in Java with the same NULL-wildcard rule as the SQL.
+Caching is **opt-in and off by default**. With no cache configured, every `hasPermission` / `getEffectivePermissions` call queries the database directly — the read path pays a single boolean check and zero cache machinery. When a `PermissionCache` is configured, those calls go through it keyed on `(identityId, orgId)`. The cached value is the full effective-permission set for that identity in that org, so a single DB round trip serves every subsequent permission question for the identity until the entry is invalidated or expires. `hasPermission` filters the cached list in Java with the same NULL-wildcard rule as the SQL.
 
-### Default
+### Opting in
 
-If you don't configure anything, the library uses an in-process `InMemoryPermissionCache` with a 60-second TTL. `ConcurrentHashMap`-backed (or the equivalent for Python/Rust — `dict` + `threading.Lock`, or `HashMap` + `Mutex`), lazy eviction on read, thread-safe across all callers.
+Pass the bundled in-process `InMemoryPermissionCache` (60-second TTL by default) into the config:
 
-### Process-local by default — caveat for multi-app deployments
+```java
+GatedhouseConfig.builder().database(db)
+    .permissionCache(new InMemoryPermissionCache())
+    .build();
+```
 
-The default `InMemoryPermissionCache` is **per-process**. Two applications pointing at the same database — whether using different SDKs (Java + Python, etc.) or two instances of the same SDK behind a load balancer — hold **independent** caches. Writes through one app's library API invalidate *that app's* cache only; the other app keeps serving its existing cached entry until the TTL expires.
+```python
+GatedhouseConfig(database=db, permission_cache=InMemoryPermissionCache())
+```
+
+```rust
+GatedhouseConfig::builder(db)
+    .permission_cache(Arc::new(InMemoryPermissionCache::new()))
+    .build();
+```
+
+It is `ConcurrentHashMap`-backed (or the equivalent for Python/Rust — `dict` + `threading.Lock`, or `HashMap` + `Mutex`), lazy eviction on read, thread-safe across all callers.
+
+### Process-local — caveat for multi-app deployments
+
+The `InMemoryPermissionCache` is **per-process**. Two applications pointing at the same database — whether using different SDKs (Java + Python, etc.) or two instances of the same SDK behind a load balancer — hold **independent** caches. Writes through one app's library API invalidate *that app's* cache only; the other app keeps serving its existing cached entry until the TTL expires.
 
 Concrete failure mode:
 
@@ -864,7 +884,7 @@ If you only run one application against the database, this never bites you. If y
 | **Shared cache** (recommended) | Implement `PermissionCache` against Redis / Memcached / Hazelcast — or in Java, use `JCachePermissionCache` to wrap any JSR 107 provider. All apps now read/write the same cache state. | Same as default | Real-time (one-write fans out via the cache) |
 | **Lower TTL** | Construct the cache with a shorter TTL — `new InMemoryPermissionCache(Duration.ofSeconds(2))` (Java), `InMemoryPermissionCache(timedelta(seconds=2))` (Python), `InMemoryPermissionCache::with_ttl(Duration::from_secs(2))` (Rust). | Reduced (more misses) | Bounded by TTL |
 | **Cross-process invalidation** | Wire a Postgres `LISTEN`/`NOTIFY` channel or a small pub/sub topic. On notification, call `gh.invalidate_cache(id, org)` or `gh.invalidate_all_cache()`. | Same as default | Near real-time |
-| **Bypass entirely** | `gh.set_cache_bypass(true)` on the affected app. Every read goes to the database. | Zero | Real-time |
+| **No cache at all** | Leave `permission_cache` unset on the affected app (the default), or flip `gh.set_cache_enabled(false)` at runtime. Every read goes to the database. | Zero | Real-time |
 
 For most multi-app deployments, the shared-cache strategy is the right answer — same code path, same TTL, and a single source of truth for cached entries.
 
@@ -946,33 +966,23 @@ In normal use you should not need either.
 
 ### Runtime kill switch
 
-There's a true bypass on the `Gatedhouse` interface itself, intended for emergency operations and debugging:
+A configured cache starts enabled. `setCacheEnabled(false)` on the `Gatedhouse` interface is the runtime kill switch, intended for emergency operations and debugging:
 
 ```java
-gh.setCacheBypass(true);   // every read goes straight to the database
-gh.setCacheBypass(false);  // caching resumes (cache starts cold)
-boolean isOn = gh.isCacheBypassed();
+gh.setCacheEnabled(false);  // every read goes straight to the database
+gh.setCacheEnabled(true);   // caching resumes (cache starts cold)
+boolean isOn = gh.isCacheEnabled();
 ```
 
-When bypass is on, `hasPermission` and `getEffectivePermissions` skip the cache entirely — neither `get` nor `put` is called. **Writes still invalidate** the cache, so when you flip bypass back off the cache is consistent and refills cold.
+While disabled, `hasPermission` and `getEffectivePermissions` skip the cache entirely — neither `get` nor `put` is called. **Writes still invalidate** the cache, so when you re-enable it the cache is consistent and refills cold.
 
-Default is off. Thread-safe — applies on the next read in any thread once set. Backed by an `AtomicBoolean`.
+Thread-safe — applies on the next read in any thread once set. Backed by an `AtomicBoolean`.
+
+With no cache configured, `isCacheEnabled()` is always `false` and `setCacheEnabled(true)` is a documented no-op — enabling caching requires a `PermissionCache` in the config.
 
 ### Disabling permanently (tests / development)
 
-For tests or development that want zero caching at compile-time rather than via the kill switch, implement a `PermissionCache` whose `get` always returns `Optional.empty()`:
-
-```java
-GatedhouseConfig.builder()
-    .database(db)
-    .permissionCache(new PermissionCache() {
-        public Optional<List<EffectivePermission>> get(String i, String o) { return Optional.empty(); }
-        public void put(String i, String o, List<EffectivePermission> p) {}
-        public void invalidate(String i, String o) {}
-        public void invalidateAll() {}
-    })
-    .build();
-```
+Nothing to do — caching is off unless you configure a cache. A config with just a database has zero cache overhead on every read.
 
 ---
 

@@ -483,35 +483,35 @@ fn run_cache_scenarios(gh: &dyn Gatedhouse, cache: &Arc<InMemoryPermissionCache>
         cache.wholesale_invalidation_count() == 1,
     );
 
-    section("Cache: kill switch — bypass at runtime");
+    section("Cache: kill switch — disable at runtime");
     gh.invalidate_all_cache();
     cache.reset_stats();
-    check("bypass starts off", !gh.is_cache_bypassed());
+    check("configured cache starts enabled", gh.is_cache_enabled());
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     check(
         "warm-up: 1 miss + 1 put + size 1",
         cache.miss_count() == 1 && cache.put_count() == 1 && cache.size() == 1,
     );
-    gh.set_cache_bypass(true);
-    check("bypass is on", gh.is_cache_bypassed());
+    gh.set_cache_enabled(false);
+    check("cache is disabled", !gh.is_cache_enabled());
     cache.reset_stats();
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_WRITE).unwrap();
     gh.has_permission(IDENTITY_BOB, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     check(
-        "bypass: zero hits and zero misses",
+        "disabled: zero hits and zero misses",
         cache.hit_count() == 0 && cache.miss_count() == 0,
     );
-    check("bypass: zero puts", cache.put_count() == 0);
-    check("bypass: cache size unchanged from warm-up", cache.size() == 1);
+    check("disabled: zero puts", cache.put_count() == 0);
+    check("disabled: cache size unchanged from warm-up", cache.size() == 1);
     gh.role_manager().assign_to_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER).unwrap();
     check(
-        "bypass: writes still invalidate cache",
+        "disabled: writes still invalidate cache",
         cache.targeted_invalidation_count() == 1,
     );
     gh.role_manager().revoke_from_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER).unwrap();
-    gh.set_cache_bypass(false);
-    check("bypass is off", !gh.is_cache_bypassed());
+    gh.set_cache_enabled(true);
+    check("cache is enabled again", gh.is_cache_enabled());
     cache.reset_stats();
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
     check(

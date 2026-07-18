@@ -7,7 +7,7 @@
 
     <groupId>com.twelvevectors</groupId>
     <artifactId>gatedhouse</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <packaging>jar</packaging>
 
     <name>Gatedhouse</name>

@@ -331,29 +331,29 @@ def _run_cache_scenarios(gh: Gatedhouse, cache: InMemoryPermissionCache) -> None
     _check("after invalidate_all_cache: wholesale=1",
            cache.wholesale_invalidation_count() == 1)
 
-    _section("Cache: kill switch — bypass at runtime")
+    _section("Cache: kill switch — disable at runtime")
     gh.invalidate_all_cache()
     cache.reset_stats()
-    _check("bypass starts off", not gh.is_cache_bypassed())
+    _check("configured cache starts enabled", gh.is_cache_enabled())
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ)
     _check("warm-up: 1 miss + 1 put + size 1",
            cache.miss_count() == 1 and cache.put_count() == 1 and cache.size() == 1)
-    gh.set_cache_bypass(True)
-    _check("bypass is on", gh.is_cache_bypassed())
+    gh.set_cache_enabled(False)
+    _check("cache is disabled", not gh.is_cache_enabled())
     cache.reset_stats()
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ)
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_WRITE)
     gh.has_permission(IDENTITY_BOB, ORG, SVC, RES_PROJ, ACT_READ)
-    _check("bypass: zero hits and zero misses",
+    _check("disabled: zero hits and zero misses",
            cache.hit_count() == 0 and cache.miss_count() == 0)
-    _check("bypass: zero puts (cache not populated)", cache.put_count() == 0)
-    _check("bypass: cache size unchanged from warm-up", cache.size() == 1)
+    _check("disabled: zero puts (cache not populated)", cache.put_count() == 0)
+    _check("disabled: cache size unchanged from warm-up", cache.size() == 1)
     gh.role_manager().assign_to_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER)
-    _check("bypass: writes still invalidate cache",
+    _check("disabled: writes still invalidate cache",
            cache.targeted_invalidation_count() == 1)
     gh.role_manager().revoke_from_identity(IDENTITY_ALICE, ORG, ROLE_DEPLOYER)
-    gh.set_cache_bypass(False)
-    _check("bypass is off", not gh.is_cache_bypassed())
+    gh.set_cache_enabled(True)
+    _check("cache is enabled again", gh.is_cache_enabled())
     cache.reset_stats()
     gh.has_permission(IDENTITY_ALICE, ORG, SVC, RES_PROJ, ACT_READ)
     _check("resumed: cold read = 1 miss",

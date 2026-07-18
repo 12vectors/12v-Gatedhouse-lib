@@ -20,9 +20,7 @@ public final class GatedhouseConfig {
             ? builder.groupSource
             : new LocalGroupSource();
         this.tokenVerifier = builder.tokenVerifier;
-        this.permissionCache = builder.permissionCache != null
-            ? builder.permissionCache
-            : new InMemoryPermissionCache();
+        this.permissionCache = builder.permissionCache;
     }
 
     public Database database() {
@@ -42,6 +40,11 @@ public final class GatedhouseConfig {
         return tokenVerifier;
     }
 
+    /**
+     * @return the configured permission cache, or {@code null} if the host
+     *     did not opt in — in which case caching is disabled and every
+     *     permission read goes to the database.
+     */
     public PermissionCache permissionCache() {
         return permissionCache;
     }
@@ -86,10 +89,12 @@ public final class GatedhouseConfig {
         }
 
         /**
-         * Optional. Defaults to a process-local
-         * {@link InMemoryPermissionCache} with a 60-second TTL. Pass a
-         * custom implementation to back the cache with Memcached, Redis,
-         * or any other shared store.
+         * Optional — caching is opt-in and disabled by default; when unset,
+         * every permission read goes straight to the database with zero
+         * cache overhead. Pass {@link InMemoryPermissionCache} for a
+         * process-local cache (60-second TTL by default), or a custom
+         * implementation to back the cache with Memcached, Redis, or any
+         * other shared store.
          */
         public Builder permissionCache(PermissionCache permissionCache) {
             this.permissionCache = permissionCache;
