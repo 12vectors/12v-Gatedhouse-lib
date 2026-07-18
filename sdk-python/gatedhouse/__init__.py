@@ -6,6 +6,11 @@
 
 Public API: import from ``gatedhouse`` directly. Modules with leading
 underscores are implementation detail; do not import from them.
+
+Web integration: the top-level ``GatedhouseApiFilter`` /
+``GatedhouseWebFilter`` are WSGI middleware; ASGI hosts (FastAPI,
+Starlette, Litestar, Quart) use the same-named classes from
+``gatedhouse.asgi``.
 """
 
 from __future__ import annotations
