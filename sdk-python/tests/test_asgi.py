@@ -125,20 +125,39 @@ class ApiFilterTest(unittest.TestCase):
         self.assertEqual(rec.status, 401)
         self.assertIn(b"Token verification failed", rec.body)
 
-    def test_non_http_scope_passes_through(self):
+    def test_lifespan_scope_passes_through(self):
+        seen = {}
+
+        async def app(scope, receive, send):
+            seen.update(scope)
+
+        f = GatedhouseApiFilter(app, _StubGatedhouse(False))
+        asyncio.run(f({"type": "lifespan"}, None, None))
+        self.assertEqual(seen, {"type": "lifespan"})
+
+    def test_websocket_without_token_is_rejected(self):
+        rec = _Recorder()
+        f = GatedhouseApiFilter(rec.app, _StubGatedhouse(True))
+        messages = rec.run(f, {"type": "websocket", "path": "/ws",
+                               "headers": []})
+        self.assertEqual(messages, [{"type": "websocket.close", "code": 1008}])
+        self.assertIsNone(rec.scope_seen)  # app never invoked
+
+    def test_websocket_with_bad_token_is_rejected(self):
         rec = _Recorder()
         f = GatedhouseApiFilter(rec.app, _StubGatedhouse(False))
+        messages = rec.run(f, {"type": "websocket", "path": "/ws",
+                               "headers": [(b"authorization", b"Bearer bad")]})
+        self.assertEqual(messages, [{"type": "websocket.close", "code": 1008}])
+        self.assertIsNone(rec.scope_seen)
 
-        async def run():
-            await f({"type": "lifespan"}, None, None)
-
-        # downstream app receives non-http scopes untouched
-        async def app(scope, receive, send):
-            rec.scope_seen = scope
-
-        f._app = app
-        asyncio.run(f({"type": "lifespan"}, None, None))
-        self.assertEqual(rec.scope_seen, {"type": "lifespan"})
+    def test_websocket_with_valid_token_passes_through(self):
+        rec = _Recorder()
+        f = GatedhouseApiFilter(rec.app, _StubGatedhouse(True))
+        rec.run(f, {"type": "websocket", "path": "/ws",
+                    "headers": [(b"authorization", b"Bearer tok")]})
+        self.assertIsNotNone(rec.scope_seen)
+        self.assertTrue(rec.scope_seen[CONTEXT_ATTR].is_admin())
 
     def test_require_helpers(self):
         from gatedhouse import GatedContext
@@ -183,6 +202,31 @@ class WebFilterTest(unittest.TestCase):
                                 login_path="https://sso.example/login")
         rec.run(w, _http_scope(session={"access_token": "bad"}))
         self.assertEqual(rec.headers[b"location"], b"https://sso.example/login")
+
+    def test_websocket_without_session_is_rejected(self):
+        rec = _Recorder()
+        w = GatedhouseWebFilter(rec.app, _StubGatedhouse(True))
+        messages = rec.run(w, {"type": "websocket", "path": "/ws",
+                               "headers": []})
+        self.assertEqual(messages, [{"type": "websocket.close", "code": 1008}])
+        self.assertIsNone(rec.scope_seen)
+
+    def test_websocket_invalid_token_evicted_and_rejected(self):
+        rec = _Recorder()
+        w = GatedhouseWebFilter(rec.app, _StubGatedhouse(False))
+        session = {"access_token": "bad"}
+        messages = rec.run(w, {"type": "websocket", "path": "/ws",
+                               "headers": [], "session": session})
+        self.assertEqual(messages, [{"type": "websocket.close", "code": 1008}])
+        self.assertNotIn("access_token", session)
+
+    def test_websocket_valid_session_token_passes_through(self):
+        rec = _Recorder()
+        w = GatedhouseWebFilter(rec.app, _StubGatedhouse(True))
+        rec.run(w, {"type": "websocket", "path": "/ws", "headers": [],
+                    "session": {"access_token": "tok"}})
+        self.assertIsNotNone(rec.scope_seen)
+        self.assertIn(CONTEXT_ATTR, rec.scope_seen)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,22 @@ headers are added to every response.
 Token verification may fetch JWKS over the network, so it runs in the
 default thread-pool executor rather than blocking the event loop.
 
+**WebSocket scopes are guarded fail-closed.** A WebSocket handshake
+reaching ``GatedhouseApiFilter`` must carry a valid ``Authorization:
+Bearer`` header, and one reaching ``GatedhouseWebFilter`` must have a
+valid session token; otherwise the handshake is rejected with
+``websocket.close`` (policy code 1008) and the downstream app is never
+invoked. Only ``lifespan`` scopes pass through unauthenticated.
+
+**Middleware ordering matters for the web filter.** Session eviction on
+an invalid token only persists if this middleware runs *inside* the
+session middleware. With Starlette/FastAPI, ``add_middleware`` wraps
+newest-outermost, so add the Gatedhouse filter *first* and
+``SessionMiddleware`` *after* it::
+
+    app.add_middleware(GatedhouseWebFilter, gatedhouse=gh)  # inner
+    app.add_middleware(SessionMiddleware, secret_key=...)   # outer
+
 Pure ASGI, stdlib-only — no Starlette or FastAPI dependency. Usage::
 
     app.add_middleware(GatedhouseApiFilter, gatedhouse=gh)   # Starlette/FastAPI
@@ -108,6 +124,14 @@ async def _send_json_error(send: _Send, status: int,
     await send({"type": "http.response.body", "body": body})
 
 
+async def _reject_websocket(receive: _Receive, send: _Send) -> None:
+    """Refuse a WebSocket handshake: consume ``websocket.connect`` and
+    close with policy-violation code 1008 without invoking the app.
+    Servers translate a pre-accept close into a rejected handshake."""
+    await receive()
+    await send({"type": "websocket.close", "code": 1008})
+
+
 async def _send_redirect(send: _Send, location: str) -> None:
     await send({
         "type": "http.response.start",
@@ -151,6 +175,10 @@ class GatedhouseApiFilter:
 
     async def __call__(self, scope: _Scope, receive: _Receive,
                        send: _Send) -> None:
+        if scope["type"] == "websocket":
+            # Fail closed: the handshake must carry a valid Bearer token.
+            await self._handle_websocket(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
@@ -175,6 +203,21 @@ class GatedhouseApiFilter:
 
         _attach_context(scope, GatedContext.from_subject(subject))
         await self._app(scope, receive, _wrap_send_with_security_headers(send))
+
+    async def _handle_websocket(self, scope: _Scope, receive: _Receive,
+                                send: _Send) -> None:
+        auth = _header(scope, b"authorization")
+        if auth is None or not auth.startswith("Bearer "):
+            await _reject_websocket(receive, send)
+            return
+        try:
+            subject = await _verify_off_loop(self._gatedhouse,
+                                             auth[7:].strip())
+        except Exception:
+            await _reject_websocket(receive, send)
+            return
+        _attach_context(scope, GatedContext.from_subject(subject))
+        await self._app(scope, receive, send)
 
     # ---- request helpers (mirror the Java statics) -------------------------
 
@@ -235,7 +278,8 @@ class GatedhouseWebFilter:
 
     async def __call__(self, scope: _Scope, receive: _Receive,
                        send: _Send) -> None:
-        if scope["type"] != "http":
+        is_websocket = scope["type"] == "websocket"
+        if not is_websocket and scope["type"] != "http":
             await self._app(scope, receive, send)
             return
 
@@ -245,24 +289,37 @@ class GatedhouseWebFilter:
                  if session is not None else None)
 
         if token is None or not str(token).strip():
-            await self._login_redirect(scope, send)
+            await self._deny(scope, receive, send, is_websocket)
             return
 
         try:
             subject = await _verify_off_loop(self._gatedhouse, token)
         except TokenVerificationException:
             # Token is invalid or expired — remove it from the session
-            # and redirect.
+            # before denying.
             if session is not None:
                 session.pop(self._session_token_attr, None)
-            await self._login_redirect(scope, send)
+            await self._deny(scope, receive, send, is_websocket)
             return
         except Exception:
-            await self._login_redirect(scope, send)
+            await self._deny(scope, receive, send, is_websocket)
             return
 
         _attach_context(scope, GatedContext.from_subject(subject))
-        await self._app(scope, receive, _wrap_send_with_security_headers(send))
+        if is_websocket:
+            await self._app(scope, receive, send)
+        else:
+            await self._app(scope, receive,
+                            _wrap_send_with_security_headers(send))
+
+    async def _deny(self, scope: _Scope, receive: _Receive, send: _Send,
+                    is_websocket: bool) -> None:
+        # A browser gets a login redirect; a WebSocket handshake cannot
+        # be redirected, so it is rejected fail-closed.
+        if is_websocket:
+            await _reject_websocket(receive, send)
+        else:
+            await self._login_redirect(scope, send)
 
     async def _login_redirect(self, scope: _Scope, send: _Send) -> None:
         if self._login_path.startswith(("http://", "https://", "//")):
