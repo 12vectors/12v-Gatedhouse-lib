@@ -8,10 +8,13 @@ import java.util.Objects;
  * {@link GatedhouseConfig.Builder#tokenVerifier(TokenVerifierConfig)} when
  * you want {@code gh.tokenVerifier()} to be available.
  *
- * <p>For a Sphinx deployment, {@link #jwksUri} is typically
- * {@code https://<sphinx-host>/api/sphinx/v1/.well-known/jwks.json},
- * {@link #issuer} matches Sphinx's {@code JWT_ISSUER}, and
- * {@link #audience} matches its {@code JWT_AUDIENCE}.
+ * <p>For a Sphinx deployment, {@link #jwksUri} is
+ * {@code https://<sphinx-host>/api/sphinx/v1/auth/jwks} (as advertised by Sphinx's
+ * OIDC discovery document's {@code jwks_uri}). {@link #issuer} is the literal
+ * {@code "sphinx"} — the {@code iss} Sphinx stamps on its OAuth access tokens, a fixed
+ * value that does <em>not</em> vary with the deployment URL (it is not the OIDC issuer
+ * URL, which appears only on id_tokens). {@link #audience} is your app's registered
+ * {@code client_id} — the {@code aud} Sphinx sets on the access token issued to that client.
  */
 public final class TokenVerifierConfig {
 

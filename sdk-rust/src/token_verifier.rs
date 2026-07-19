@@ -2,10 +2,13 @@
 
 /// Settings for `Gatedhouse::verify_token`.
 ///
-/// For a Sphinx deployment, `jwks_uri` is typically
-/// `https://<sphinx-host>/api/sphinx/v1/.well-known/jwks.json`,
-/// `issuer` matches Sphinx's `JWT_ISSUER`, and `audience` matches its
-/// `JWT_AUDIENCE`.
+/// For a Sphinx deployment, `jwks_uri` is
+/// `https://<sphinx-host>/api/sphinx/v1/auth/jwks` (as advertised by Sphinx's OIDC
+/// discovery `jwks_uri`). `issuer` is the literal `"sphinx"` -- the `iss` on Sphinx's
+/// OAuth access tokens, a fixed value that does *not* vary with the deployment URL (it
+/// is not the OIDC issuer URL, which appears only on id_tokens). `audience` is your
+/// app's registered `client_id` -- the `aud` Sphinx sets on the access token issued to
+/// that client.
 #[derive(Debug, Clone)]
 pub struct TokenVerifierConfig {
     pub jwks_uri: String,

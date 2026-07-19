@@ -236,9 +236,9 @@ The three SDKs share **the same architecture, class names, and operation semanti
 var cfg = GatedhouseConfig.builder()
     .database(db)
     .tokenVerifier(TokenVerifierConfig.builder()
-        .jwksUri(URI.create("https://auth.example.com/.well-known/jwks.json"))
-        .issuer("https://auth.example.com")
-        .audience("superagent-platform")
+        .jwksUri(URI.create("https://auth.example.com/api/sphinx/v1/auth/jwks"))
+        .issuer("sphinx")                 // Sphinx access-token iss is the literal "sphinx"
+        .audience("superagent-platform")  // your registered client_id (the token's aud)
         .build())
     .build();
 try (Gatedhouse gh = GatedhouseFactory.create(cfg)) {
@@ -255,9 +255,9 @@ from gatedhouse import (
 config = GatedhouseConfig(
     database=Database.from_uri(conninfo),
     token_verifier=TokenVerifierConfig(
-        jwks_uri="https://auth.example.com/.well-known/jwks.json",
-        issuer="https://auth.example.com",
-        audience="superagent-platform",
+        jwks_uri="https://auth.example.com/api/sphinx/v1/auth/jwks",
+        issuer="sphinx",                 # Sphinx access-token iss is the literal "sphinx"
+        audience="superagent-platform",  # your registered client_id (the token's aud)
     ),
 )
 with GatedhouseFactory.create(config) as gh:
@@ -276,9 +276,9 @@ use std::sync::Arc;
 let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(conninfo));
 let config = GatedhouseConfig::builder(database)
     .token_verifier(TokenVerifierConfig::new(
-        "https://auth.example.com/.well-known/jwks.json",
-        "https://auth.example.com",
-        "superagent-platform",
+        "https://auth.example.com/api/sphinx/v1/auth/jwks", // jwks_uri
+        "sphinx",              // issuer: Sphinx access-token iss is the literal "sphinx"
+        "superagent-platform", // audience: your registered client_id (the token's aud)
     ))
     .build();
 let gh = GatedhouseFactory::create(config)?;
@@ -560,9 +560,9 @@ GatedhouseConfig config = GatedhouseConfig.builder()
     // Optional — only set if you want gh.verifyToken(...) to work
     .tokenVerifier(TokenVerifierConfig.builder()
         .jwksUri(URI.create(
-            "https://auth.example.com/api/sphinx/v1/.well-known/jwks.json"))
-        .issuer("https://auth.example.com")
-        .audience("superagent-platform")
+            "https://auth.example.com/api/sphinx/v1/auth/jwks"))
+        .issuer("sphinx")                 // Sphinx access-token iss is the literal "sphinx"
+        .audience("superagent-platform")  // your registered client_id (the token's aud)
         .build())
     // Optional — defaults to LocalGroupSource (host owns group writes)
     // .groupSource(new MyEventDrivenGroupSource(...))
@@ -687,9 +687,9 @@ GatedhouseConfig config = GatedhouseConfig.builder()
     .database(db)
     .tokenVerifier(TokenVerifierConfig.builder()
         .jwksUri(URI.create(
-            "https://auth.example.com/api/sphinx/v1/.well-known/jwks.json"))
-        .issuer("https://auth.example.com")
-        .audience("superagent-platform")
+            "https://auth.example.com/api/sphinx/v1/auth/jwks"))
+        .issuer("sphinx")                 // Sphinx access-token iss is the literal "sphinx"
+        .audience("superagent-platform")  // your registered client_id (the token's aud)
         .build())
     .build();
 ```
