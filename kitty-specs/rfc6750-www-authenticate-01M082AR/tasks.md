@@ -33,10 +33,10 @@
 
 Included subtasks:
 
-- [ ] T001 Add constant + conditional header in `sendJsonError` (WP01)
-- [ ] T002 Add JUnit 5 test-scope deps + Surefire to pom (WP01)
-- [ ] T003 Create `GatedhouseApiFilterTest` with servlet fakes (WP01)
-- [ ] T004 Assert 401 body and security headers unchanged (WP01)
+- [x] T001 Add constant + conditional header in `sendJsonError` (WP01)
+- [x] T002 Add JUnit 5 test-scope deps + Surefire to pom (WP01)
+- [x] T003 Create `GatedhouseApiFilterTest` with servlet fakes (WP01)
+- [x] T004 Assert 401 body and security headers unchanged (WP01)
 
 Implementation sketch: add `public static final String WWW_AUTHENTICATE_CHALLENGE = "Bearer"`; in `sendJsonError`, `if (status == 401) resp.setHeader("WWW-Authenticate", WWW_AUTHENTICATE_CHALLENGE);`. Test uses hand-rolled `HttpServletRequest`/`HttpServletResponse` fakes (no Mockito) and a stub `Gatedhouse` whose `verifyToken` throws `TokenVerificationException`.
 
