@@ -2,7 +2,7 @@
   "mission_slug": "rfc6750-www-authenticate-01M082AR",
   "mission_number": "",
   "mission_type": "software-dev",
-  "overall_verdict": "pass",
+  "overall_verdict": "fail",
   "criteria": [
     {
       "criterion_id": "FR-001",
@@ -59,52 +59,52 @@
     {
       "invariant_id": "C-001",
       "description": "401 JSON body byte-identical",
-      "evidence": "Java test asserts exact body; Python/Rust body assertions unchanged and green",
       "verification_method": "custom_command",
-      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
-      "result": "confirmed_absent",
-      "scope": null,
-      "extras": {}
+      "verification_command": "cd sdk-python && python3 -m pytest -q tests/test_web_sphinx.py",
+      "result": "pending",
+      "evidence": "Command exited 2: sh: 1: Syntax error: \"(\" unexpected",
+      "extras": {},
+      "scope": null
     },
     {
       "invariant_id": "C-002",
       "description": "Security headers unchanged",
-      "evidence": "Exact-value assertions in all three suites",
       "verification_method": "custom_command",
-      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
-      "result": "confirmed_absent",
-      "scope": null,
-      "extras": {}
+      "verification_command": "cd sdk-python && python3 -m pytest -q tests/test_asgi.py",
+      "result": "pending",
+      "evidence": "Command exited 2: sh: 1: Syntax error: \"(\" unexpected",
+      "extras": {},
+      "scope": null
     },
     {
       "invariant_id": "C-003",
       "description": "No challenge on 403",
-      "evidence": "Rust Forbidden.challenge_header()==None asserted; Java/Python header write gated on status 401 in code",
       "verification_method": "custom_command",
-      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
-      "result": "confirmed_absent",
-      "scope": null,
-      "extras": {}
+      "verification_command": "cd sdk-python && python3 -c \"import gatedhouse._web as w, sys; hs=[]; w._send_json_error(lambda s,h,e=None: hs.extend(h), '403 Forbidden', 'forbidden', 'x'); sys.exit(1 if any(n.lower()=='www-authenticate' for n,_ in hs) else 0)\"",
+      "result": "pending",
+      "evidence": "Command exited 2: sh: 1: Syntax error: \"(\" unexpected",
+      "extras": {},
+      "scope": null
     },
     {
       "invariant_id": "C-004",
       "description": "Web-guard login redirect unchanged",
-      "evidence": "Python 302 test asserts Location and absence of WWW-Authenticate",
       "verification_method": "custom_command",
-      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
-      "result": "confirmed_absent",
-      "scope": null,
-      "extras": {}
+      "verification_command": "cd sdk-python && python3 -m pytest -q tests/test_web_sphinx.py -k redirect",
+      "result": "pending",
+      "evidence": "Command exited 2: sh: 1: Syntax error: \"(\" unexpected",
+      "extras": {},
+      "scope": null
     },
     {
       "invariant_id": "C-005",
       "description": "Bare Bearer challenge, no auth-params",
-      "evidence": "Exact-value 'Bearer' assertions in all three suites",
-      "verification_method": "custom_command",
-      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
-      "result": "confirmed_absent",
-      "scope": null,
-      "extras": {}
+      "verification_method": "grep_absence",
+      "verification_command": "error=\"invalid_token\"",
+      "result": "pending",
+      "evidence": "Command exited 2: sh: 1: Syntax error: \"(\" unexpected",
+      "extras": {},
+      "scope": "sdk-java/src sdk-python/gatedhouse sdk-rust/src"
     }
   ]
 }
