@@ -23,7 +23,7 @@ subtasks:
 agent: claude
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
-agent_profile: implementer-ivan
+agent_profile: java-jenny
 authoritative_surface: sdk-java/src/main/java/com/twelvevectors/gatedhouse/
 create_intent: []
 execution_mode: code_change

@@ -25,7 +25,7 @@ subtasks:
 agent: claude
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
-agent_profile: implementer-ivan
+agent_profile: python-pedro
 authoritative_surface: sdk-python/gatedhouse/
 create_intent: []
 execution_mode: code_change
