@@ -18,7 +18,8 @@ subtasks:
 - T010
 - T011
 - T012
-agent: claude
+agent: "claude"
+shell_pid: "10646"
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
 agent_profile: implementer-ivan
@@ -116,3 +117,10 @@ challenge stays tied to the 401 mapping.
 API-shape review: tuple constant matches the `SECURITY_HEADERS` idiom;
 accessor returns `Option` so hosts can't accidentally attach the challenge
 to 403. Reject string-typed or always-Some designs.
+
+## Activity Log
+
+- 2026-08-17T15:10:27Z – claude – shell_pid=5588 – Assigned agent via action command
+- 2026-08-17T15:12:08Z – claude – shell_pid=5588 – Ready for review: 5/5 tests green
+- 2026-08-17T15:12:24Z – claude – shell_pid=10646 – Started review via action command
+- 2026-08-17T15:12:42Z – user – shell_pid=10646 – Review passed: Option-typed accessor, tuple matches SECURITY_HEADERS idiom, Forbidden=None, 5/5 green

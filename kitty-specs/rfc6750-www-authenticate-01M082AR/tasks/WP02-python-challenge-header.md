@@ -23,7 +23,7 @@ subtasks:
 - T008
 - T009
 agent: "claude"
-shell_pid: "29244"
+shell_pid: "4640"
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
 agent_profile: python-pedro
@@ -143,3 +143,6 @@ if the header leaks onto 403 or redirect paths.
 ## Activity Log
 
 - 2026-08-17T15:06:04Z – claude – shell_pid=29244 – Assigned agent via action command
+- 2026-08-17T15:09:34Z – claude – shell_pid=29244 – Ready for review: 27/27 tests green
+- 2026-08-17T15:09:49Z – claude – shell_pid=4640 – Started review via action command
+- 2026-08-17T15:10:15Z – user – shell_pid=4640 – Review passed: str/bytes split correct, 401-only, negative-space asserted, 27/27 green

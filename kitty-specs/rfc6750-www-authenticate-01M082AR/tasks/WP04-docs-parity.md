@@ -14,7 +14,8 @@ branch_strategy: Planning artifacts for this mission were generated on claude/li
 subtasks:
 - T013
 - T014
-agent: claude
+agent: "claude"
+shell_pid: "13329"
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
 agent_profile: curator-carla
@@ -77,3 +78,10 @@ login redirects do NOT carry the header.
 
 Cross-check every symbol name against the actual WP01–WP03 diffs — docs that
 name non-existent constants are worse than no docs.
+
+## Activity Log
+
+- 2026-08-17T15:12:52Z – claude – shell_pid=11239 – Assigned agent via action command
+- 2026-08-17T15:13:51Z – claude – shell_pid=11239 – Docs updated; symbol names cross-checked against WP01-03 diffs
+- 2026-08-17T15:14:02Z – claude – shell_pid=13329 – Started review via action command
+- 2026-08-17T15:14:14Z – user – shell_pid=13329 – Review passed: symbol names verified against approved WP01-03 code; negative-space documented
