@@ -60,41 +60,51 @@
       "invariant_id": "C-001",
       "description": "401 JSON body byte-identical",
       "evidence": "Java test asserts exact body; Python/Rust body assertions unchanged and green",
-      "pass_fail": "pass",
-      "verified_by": "claude",
-      "verified_at": "2026-08-17T15:45:00Z"
+      "verification_method": "custom_command",
+      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
+      "result": "confirmed_absent",
+      "scope": null,
+      "extras": {}
     },
     {
       "invariant_id": "C-002",
       "description": "Security headers unchanged",
       "evidence": "Exact-value assertions in all three suites",
-      "pass_fail": "pass",
-      "verified_by": "claude",
-      "verified_at": "2026-08-17T15:45:00Z"
+      "verification_method": "custom_command",
+      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
+      "result": "confirmed_absent",
+      "scope": null,
+      "extras": {}
     },
     {
       "invariant_id": "C-003",
       "description": "No challenge on 403",
       "evidence": "Rust Forbidden.challenge_header()==None asserted; Java/Python header write gated on status 401 in code",
-      "pass_fail": "pass",
-      "verified_by": "claude",
-      "verified_at": "2026-08-17T15:45:00Z"
+      "verification_method": "custom_command",
+      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
+      "result": "confirmed_absent",
+      "scope": null,
+      "extras": {}
     },
     {
       "invariant_id": "C-004",
       "description": "Web-guard login redirect unchanged",
       "evidence": "Python 302 test asserts Location and absence of WWW-Authenticate",
-      "pass_fail": "pass",
-      "verified_by": "claude",
-      "verified_at": "2026-08-17T15:45:00Z"
+      "verification_method": "custom_command",
+      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
+      "result": "confirmed_absent",
+      "scope": null,
+      "extras": {}
     },
     {
       "invariant_id": "C-005",
       "description": "Bare Bearer challenge, no auth-params",
       "evidence": "Exact-value 'Bearer' assertions in all three suites",
-      "pass_fail": "pass",
-      "verified_by": "claude",
-      "verified_at": "2026-08-17T15:45:00Z"
+      "verification_method": "custom_command",
+      "verification_command": "per-SDK test suites (mvn test / pytest / cargo test --test web_sphinx)",
+      "result": "confirmed_absent",
+      "scope": null,
+      "extras": {}
     }
   ]
 }
