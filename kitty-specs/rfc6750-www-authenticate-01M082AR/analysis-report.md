@@ -4,7 +4,7 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: rfc6750-www-authenticate-01M082AR
 mission_id: 01M082ARZXGNY8CD09TVYNXHB8
-generated_at: '2026-08-17T14:59:27.375400+00:00'
+generated_at: '2026-08-17T15:01:39.947705+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
@@ -17,14 +17,14 @@ input_artifacts:
     path: /home/user/12v-Gatedhouse-lib/kitty-specs/rfc6750-www-authenticate-01M082AR/tasks.md
     sha256: 79627cfa79fd8cf664d1d4d76f464f4bf702e8f43680adb77a0b03e063eee4d7
   charter:
-    path:
-    sha256:
+    path: /home/user/12v-Gatedhouse-lib/.kittify/charter/charter.md
+    sha256: 10be8d4e7048d9924602c62fa868acf6f2b918127abdebeed31e1cd45b5cfd48
 verdict: ready
 issue_counts:
-  low: 2
-  medium: 0
   critical: 0
+  medium: 0
   high: 0
+  low: 2
   info: 0
 findings:
 - id: C1
@@ -57,7 +57,11 @@ findings:
 | NFR-002 additive-api | Yes | T002 (test scope), T005, T011 | Additive-only surfaces |
 | C-001..C-005 invariants | Yes | T004, T008, T009, T012 | Negative assertions present |
 
-**Charter Alignment Issues:** none — no charter exists (`.kittify/charter/charter.md` absent); Charter Check was explicitly skipped in plan.md.
+**Charter Alignment Issues:** none. Checked against the project charter (tri-SDK parity MUST, testing standards, additive-API quality gate):
+- Tri-SDK parity: satisfied — WP01/WP02/WP03 cover Java, Python (both styles), Rust with the identical wire contract pinned in contracts/401-response.md.
+- Negative-space testing: satisfied — T004, T008, T009, T012 assert what must NOT change (bodies, security headers, 403/redirect/websocket paths).
+- Additive-API gate: satisfied — new constants/accessor only; JUnit is test-scoped (NFR-002).
+- Note: plan.md's Charter Check section says "Skipped — no charter exists"; the charter was created after planning. Wording is now historical but the plan complies with the charter in substance.
 
 **Unmapped Tasks:** none — all 14 subtasks map to at least one requirement.
 
