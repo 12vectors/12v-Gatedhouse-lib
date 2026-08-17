@@ -15,7 +15,7 @@ requirement_refs:
 tracker_refs: []
 planning_base_branch: claude/library-parity-python-rust-java-30h29l
 merge_target_branch: claude/library-parity-python-rust-java-30h29l
-branch_strategy: lane worktree from planning base; merge back to target
+branch_strategy: Planning artifacts for this mission were generated on claude/library-parity-python-rust-java-30h29l. During /spec-kitty.implement this WP may branch from a dependency-specific base, but completed changes must merge back into claude/library-parity-python-rust-java-30h29l unless the human explicitly redirects the landing branch.
 subtasks:
 - T005
 - T006

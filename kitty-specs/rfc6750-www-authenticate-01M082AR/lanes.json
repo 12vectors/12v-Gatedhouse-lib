@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "mission_slug": "rfc6750-www-authenticate-01M082AR",
+  "mission_id": "01M082ARZXGNY8CD09TVYNXHB8",
+  "mission_branch": "kitty/mission-rfc6750-www-authenticate-01M082AR",
+  "target_branch": "claude/library-parity-python-rust-java-30h29l",
+  "lanes": [
+    {
+      "lane_id": "lane-a",
+      "wp_ids": [
+        "WP01"
+      ],
+      "write_scope": [
+        "sdk-java/pom.xml",
+        "sdk-java/src/main/java/com/twelvevectors/gatedhouse/GatedhouseApiFilter.java",
+        "sdk-java/src/test/**"
+      ],
+      "predicted_surfaces": [
+        "api",
+        "artifact-rendering",
+        "tests"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-b",
+      "wp_ids": [
+        "WP02"
+      ],
+      "write_scope": [
+        "sdk-python/gatedhouse/__init__.py",
+        "sdk-python/gatedhouse/_web.py",
+        "sdk-python/gatedhouse/asgi.py",
+        "sdk-python/tests/test_asgi.py",
+        "sdk-python/tests/test_web_sphinx.py"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-c",
+      "wp_ids": [
+        "WP03"
+      ],
+      "write_scope": [
+        "sdk-rust/src/filters.rs",
+        "sdk-rust/src/lib.rs",
+        "sdk-rust/tests/web_sphinx.rs"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [],
+      "parallel_group": 0
+    },
+    {
+      "lane_id": "lane-d",
+      "wp_ids": [
+        "WP04"
+      ],
+      "write_scope": [
+        "README.md",
+        "SKILLS.md"
+      ],
+      "predicted_surfaces": [
+        "api"
+      ],
+      "depends_on_lanes": [
+        "lane-a",
+        "lane-b",
+        "lane-c"
+      ],
+      "parallel_group": 1
+    }
+  ],
+  "computed_at": "2026-08-17T14:49:08.708248+00:00",
+  "computed_from": "dependency_graph+ownership",
+  "planning_artifact_wps": []
+}
