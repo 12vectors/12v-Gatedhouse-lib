@@ -53,11 +53,11 @@ Risks: `sendJsonError` is the future 403 write path too — condition on status,
 
 Included subtasks:
 
-- [ ] T005 Shared constant `WWW_AUTHENTICATE_CHALLENGE = "Bearer"` in `_web.py`, exported from `gatedhouse` (WP02)
-- [ ] T006 WSGI `_send_json_error` emits header for `401 Unauthorized` status lines (WP02)
-- [ ] T007 ASGI `_send_json_error` emits `(b"www-authenticate", b"Bearer")` when status == 401 (WP02)
-- [ ] T008 Header assertions in `tests/test_web_sphinx.py` (WP02)
-- [ ] T009 Header assertions + websocket-unchanged assertion in `tests/test_asgi.py` (WP02)
+- [x] T005 Shared constant `WWW_AUTHENTICATE_CHALLENGE = "Bearer"` in `_web.py`, exported from `gatedhouse` (WP02)
+- [x] T006 WSGI `_send_json_error` emits header for `401 Unauthorized` status lines (WP02)
+- [x] T007 ASGI `_send_json_error` emits `(b"www-authenticate", b"Bearer")` when status == 401 (WP02)
+- [x] T008 Header assertions in `tests/test_web_sphinx.py` (WP02)
+- [x] T009 Header assertions + websocket-unchanged assertion in `tests/test_asgi.py` (WP02)
 
 Implementation sketch: constant lives beside the existing security-headers constant in `_web.py`; `asgi.py` derives its bytes form once at module level. Both helpers append conditionally on 401 so 403 reuse stays correct.
 
