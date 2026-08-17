@@ -1,5 +1,4 @@
 {
-  "accept_commit": "d8b5573314f176f75dbb2521bf04eb4dbd7f4832",
   "acceptance_history": [
     {
       "accept_commit": "d8b5573314f176f75dbb2521bf04eb4dbd7f4832",
@@ -7,12 +6,18 @@
       "accepted_at": "2026-08-17T15:38:06.790798+00:00",
       "accepted_by": "system",
       "accepted_from_commit": "ff5a3467e25a80f73a4e5b17cf630c18b8bbfc50"
+    },
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-17T15:38:18.432177+00:00",
+      "accepted_by": "system",
+      "accepted_from_commit": "03131a01ec409816ecb533ce2d3cdf034300a353"
     }
   ],
   "acceptance_mode": "pr",
-  "accepted_at": "2026-08-17T15:38:06.790798+00:00",
+  "accepted_at": "2026-08-17T15:38:18.432177+00:00",
   "accepted_by": "system",
-  "accepted_from_commit": "ff5a3467e25a80f73a4e5b17cf630c18b8bbfc50",
+  "accepted_from_commit": "03131a01ec409816ecb533ce2d3cdf034300a353",
   "coordination_branch": "kitty/mission-rfc6750-www-authenticate-01M082AR",
   "created_at": "2026-08-17T14:34:41.022079+00:00",
   "flattened": false,
