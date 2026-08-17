@@ -1,4 +1,16 @@
 {
+  "acceptance_history": [
+    {
+      "acceptance_mode": "pr",
+      "accepted_at": "2026-08-17T15:38:06.790798+00:00",
+      "accepted_by": "system",
+      "accepted_from_commit": "ff5a3467e25a80f73a4e5b17cf630c18b8bbfc50"
+    }
+  ],
+  "acceptance_mode": "pr",
+  "accepted_at": "2026-08-17T15:38:06.790798+00:00",
+  "accepted_by": "system",
+  "accepted_from_commit": "ff5a3467e25a80f73a4e5b17cf630c18b8bbfc50",
   "coordination_branch": "kitty/mission-rfc6750-www-authenticate-01M082AR",
   "created_at": "2026-08-17T14:34:41.022079+00:00",
   "flattened": false,
