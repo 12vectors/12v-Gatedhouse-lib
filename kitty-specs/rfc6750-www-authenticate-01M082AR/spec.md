@@ -46,8 +46,9 @@ aspect of the response.
 
 ### Testing Expectations
 
-- Each SDK's existing 401 test paths are extended to assert the presence and
-  exact value of the new header.
+- Each SDK's 401 test paths — extended where they exist, created where absent
+  (the Java SDK has no test suite yet) — assert the presence and exact value
+  of the new header.
 - Existing assertions about the 401 JSON body and security headers continue to
   pass unmodified, proving the invariant that nothing else changed.
 
