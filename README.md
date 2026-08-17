@@ -55,7 +55,7 @@ For web applications (REST APIs or browser-facing UIs), Gatedhouse provides buil
 
 *   **`SphinxClient`**: A lightweight HTTP client wrapper utilizing standard `java.net.http.HttpClient` to coordinate OAuth 2.0 authorization code exchanges, client credentials, token exchanges, token refreshes, and introspections.
 *   **`GatedhouseWebFilter`**: A standard `jakarta.servlet.Filter` that protects browser-facing UI pages (e.g., `/dashboard/*`). It reads tokens from the `HttpSession` and redirects unauthorized users' browsers to a local or absolute `loginPath` on failure.
-*   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body on failure.
+*   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body on failure, carrying the RFC 6750 challenge header `WWW-Authenticate: Bearer` (exposed as `GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE`).
 *   **`GatedContext`**: A type-safe record representation of a verified token's claims, accessible via `GatedhouseApiFilter.getContext(request)`.
 
 #### Configuration Example
@@ -106,7 +106,7 @@ The WSGI components:
 
 *   **`SphinxClient`**: The same OAuth 2.0 helper (code exchange, client credentials, token exchange, refresh, introspection, login URLs) built on stdlib `urllib`.
 *   **`GatedhouseWebFilter`**: WSGI middleware guarding browser-facing pages. Reads the token from a session mapping the host's session middleware exposes in the environ (`session_environ_key`, default `"gatedhouse.session"`) and 302-redirects to `login_path` on failure.
-*   **`GatedhouseApiFilter`**: WSGI middleware guarding REST endpoints. Validates `Authorization: Bearer <token>` and returns the same `401` JSON body on failure. Helpers `get_context(environ)`, `require_admin`, `require_human`, and `require_scope` mirror the Java statics.
+*   **`GatedhouseApiFilter`**: WSGI middleware guarding REST endpoints. Validates `Authorization: Bearer <token>` and returns the same `401` JSON body on failure, with the RFC 6750 `WWW-Authenticate: Bearer` challenge header (constant `gatedhouse.WWW_AUTHENTICATE_CHALLENGE`; the ASGI variant emits it too). Helpers `get_context(environ)`, `require_admin`, `require_human`, and `require_scope` mirror the Java statics.
 *   **`GatedContext`**: The same type-safe claims view, stamped into the WSGI environ under the same key Java uses for its request attribute.
 *   **`GatedhouseFactory.create_just_token_verifier(TokenVerifierConfig(...))`**: database-free, verify-only instance.
 
@@ -130,6 +130,7 @@ Rust has no servlet-like standard interface, so the Rust SDK exposes the same de
 *   **`GatedhouseApiFilter::authenticate(authorization_header)`**: returns the verified `GatedContext` or a `FilterError` carrying the exact 401 status and JSON body the Java filter writes. `require_admin` / `require_human` / `require_scope` return `FilterError::Forbidden` on failure.
 *   **`GatedhouseWebFilter::check(session_token, context_path)`**: returns `WebFilterOutcome::Authenticated(ctx)` or `WebFilterOutcome::RedirectToLogin { location, clear_session_token }` — the same redirect resolution (absolute vs. context-relative login path) and session-eviction semantics.
 *   **`SECURITY_HEADERS`**: the header set both Java filters apply, for the host to add to every response.
+*   **`WWW_AUTHENTICATE`** + **`FilterError::challenge_header()`**: the RFC 6750 `WWW-Authenticate: Bearer` challenge for the host to add to 401 responses (`Some` for `Unauthorized`, `None` for `Forbidden` — 403s and login redirects stay challenge-free).
 *   **`GatedhouseFactory::create_just_token_verifier(TokenVerifierConfig)`**: database-free, verify-only instance.
 
 ```rust

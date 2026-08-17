@@ -44,6 +44,9 @@ _SECURITY_HEADERS = (
     ("Referrer-Policy", "strict-origin-when-cross-origin"),
 )
 
+#: RFC 6750 challenge sent on every 401 response.
+WWW_AUTHENTICATE_CHALLENGE = "Bearer"
+
 _WsgiApp = Callable[..., Iterable[bytes]]
 
 
@@ -75,6 +78,9 @@ def _send_json_error(start_response: Callable, status: str,
         ("Content-Length", str(len(body))),
         *_SECURITY_HEADERS,
     ]
+    # RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
+    if status.startswith("401"):
+        headers.append(("WWW-Authenticate", WWW_AUTHENTICATE_CHALLENGE))
     start_response(status, headers)
     return [body]
 

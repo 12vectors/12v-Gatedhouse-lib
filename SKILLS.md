@@ -300,9 +300,10 @@ Same components in all three SDKs, adapted to each platform's web standard: Java
 | API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) / `gatedhouse.asgi.GatedhouseApiFilter` (ASGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
 | Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI) / `gatedhouse.asgi.GatedhouseWebFilter` (ASGI, reads `scope["session"]`) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
 | Privilege asserts | `requireAdmin/requireHuman/requireScope` (throw `ForbiddenException`) | `require_admin/require_human/require_scope` (raise `ForbiddenException`) | `require_admin/require_human/require_scope` (return `FilterError::Forbidden`) |
+| 401 challenge header | `GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE` (emitted automatically) | `gatedhouse.WWW_AUTHENTICATE_CHALLENGE` (WSGI + ASGI emit automatically) | `gatedhouse::WWW_AUTHENTICATE` + `FilterError::challenge_header()` (host copies onto 401) |
 | Verify-only instance | `GatedhouseFactory.createJustTokenVerifier(cfg)` | `GatedhouseFactory.create_just_token_verifier(cfg)` | `GatedhouseFactory::create_just_token_verifier(cfg)` |
 
-The verify-only instance needs no database; every database-backed method on it fails fast (Java `UnsupportedOperationException`, Python `NotImplementedError`, Rust panic) with the same message. The request-context key (`com.twelvevectors.gatedhouse.context`), default login path (`/auth/login`), default session token attribute (`access_token`), security headers, and 401 JSON body shape are identical across SDKs.
+The verify-only instance needs no database; every database-backed method on it fails fast (Java `UnsupportedOperationException`, Python `NotImplementedError`, Rust panic) with the same message. The request-context key (`com.twelvevectors.gatedhouse.context`), default login path (`/auth/login`), default session token attribute (`access_token`), security headers, and 401 JSON body shape are identical across SDKs. Every guard-produced 401 also carries the RFC 6750 challenge header `WWW-Authenticate: Bearer`; 403 responses and login redirects never do.
 
 ### Failure-mode handling for `verify_token`
 

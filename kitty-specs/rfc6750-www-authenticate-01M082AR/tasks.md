@@ -93,8 +93,8 @@ Risks: don't run rustfmt against `lib.rs` module tree (recurses over pre-existin
 
 Included subtasks:
 
-- [x] T013 README.md guard sections + Language Equivalents row (WP04)
-- [x] T014 SKILLS.md web-integration sections (WP04)
+- [ ] T013 README.md guard sections + Language Equivalents row (WP04)
+- [ ] T014 SKILLS.md web-integration sections (WP04)
 
 Dependencies: WP01, WP02, WP03 (documents shipped behavior).
 Risks: none material.

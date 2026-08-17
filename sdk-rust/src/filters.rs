@@ -11,7 +11,8 @@
 //! [`GatedContext`] or the exact response the Java filters would write
 //! (401 JSON body / login redirect). Wire them into axum/actix/hyper
 //! middleware in a few lines, adding [`SECURITY_HEADERS`] to every
-//! response as the Java filters do.
+//! response as the Java filters do — and the challenge header from
+//! [`FilterError::challenge_header`] to error responses.
 
 use std::fmt;
 use std::sync::Arc;
@@ -25,6 +26,10 @@ pub const SECURITY_HEADERS: &[(&str, &str)] = &[
     ("X-Frame-Options", "DENY"),
     ("Referrer-Policy", "strict-origin-when-cross-origin"),
 ];
+
+/// RFC 6750 challenge header the host must add to every 401 response,
+/// alongside [`SECURITY_HEADERS`] (RFC 7235 §4.1 makes it mandatory).
+pub const WWW_AUTHENTICATE: (&str, &str) = ("WWW-Authenticate", "Bearer");
 
 /// Default login redirect path for [`GatedhouseWebFilter`].
 pub const DEFAULT_LOGIN_PATH: &str = "/auth/login";
@@ -46,6 +51,15 @@ impl FilterError {
         match self {
             FilterError::Unauthorized(_) => 401,
             FilterError::Forbidden(_) => 403,
+        }
+    }
+
+    /// The `WWW-Authenticate` challenge the host must emit with this error:
+    /// `Some` for 401 (RFC 6750 bare Bearer challenge), `None` for 403.
+    pub fn challenge_header(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            FilterError::Unauthorized(_) => Some(WWW_AUTHENTICATE),
+            FilterError::Forbidden(_) => None,
         }
     }
 

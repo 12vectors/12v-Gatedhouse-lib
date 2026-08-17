@@ -17,12 +17,16 @@ import java.io.IOException;
 
 /**
  * API Security Filter that enforces standard Authorization Bearer token validation.
- * On failure, returns a clean 401 JSON response.
+ * On failure, returns a clean 401 JSON response carrying the RFC 6750
+ * {@code WWW-Authenticate: Bearer} challenge header.
  */
 public final class GatedhouseApiFilter implements Filter {
 
     public static final String CONTEXT_ATTR = "com.twelvevectors.gatedhouse.context";
     public static final String DEFAULT_GATEDHOUSE_ATTR = "com.twelvevectors.gatedhouse.Gatedhouse";
+
+    /** RFC 6750 challenge sent on every 401 response ({@code WWW-Authenticate: Bearer}). */
+    public static final String WWW_AUTHENTICATE_CHALLENGE = "Bearer";
 
     private Gatedhouse gatedhouse;
     private String gatedhouseAttr = DEFAULT_GATEDHOUSE_ATTR;
@@ -134,6 +138,10 @@ public final class GatedhouseApiFilter implements Filter {
     private static void sendJsonError(HttpServletResponse resp, int status, String error, String detail)
             throws IOException {
         resp.setStatus(status);
+        // RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
+        if (status == 401) {
+            resp.setHeader("WWW-Authenticate", WWW_AUTHENTICATE_CHALLENGE);
+        }
         resp.setContentType("application/json");
         resp.setCharacterEncoding("UTF-8");
         resp.getWriter().write("{\"error\":\"" + error + "\",\"detail\":\"" + detail + "\"}");

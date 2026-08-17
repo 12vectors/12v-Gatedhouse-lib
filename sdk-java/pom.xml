@@ -91,7 +91,29 @@
             <version>6.0.0</version>
             <scope>provided</scope>
         </dependency>
+
+        <!--
+            JUnit 5 for unit tests. Test scope only — no impact on the
+            published artifact or its consumer-visible dependency tree.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Surefire 3.x is required for JUnit 5 test discovery. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+        </plugins>
+    </build>
 
     <distributionManagement>
         <repository>

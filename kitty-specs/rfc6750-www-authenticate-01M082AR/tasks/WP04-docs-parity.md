@@ -84,4 +84,3 @@ name non-existent constants are worse than no docs.
 - 2026-08-17T15:12:52Z – claude – shell_pid=11239 – Assigned agent via action command
 - 2026-08-17T15:13:51Z – claude – shell_pid=11239 – Docs updated; symbol names cross-checked against WP01-03 diffs
 - 2026-08-17T15:14:02Z – claude – shell_pid=13329 – Started review via action command
-- 2026-08-17T15:14:14Z – user – shell_pid=13329 – Review passed: symbol names verified against approved WP01-03 code; negative-space documented

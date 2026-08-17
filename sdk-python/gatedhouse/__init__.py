@@ -39,6 +39,7 @@ from ._sphinx_client import SphinxClient, TokenResponse
 from ._token_verifier_config import TokenVerifierConfig
 from ._types import AuthenticatedSubject, EffectivePermission, PermissionCacheKey
 from ._web import (
+    WWW_AUTHENTICATE_CHALLENGE,
     ForbiddenException,
     GatedhouseApiFilter,
     GatedhouseWebFilter,
@@ -65,6 +66,7 @@ __all__ = [
     # Web & Sphinx SSO integration
     "GatedContext",
     "GatedhouseApiFilter",
+    "WWW_AUTHENTICATE_CHALLENGE",
     "GatedhouseWebFilter",
     "SphinxClient",
     "TokenResponse",

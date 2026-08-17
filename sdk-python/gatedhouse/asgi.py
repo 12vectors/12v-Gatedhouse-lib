@@ -59,7 +59,11 @@ from typing import Any, Awaitable, Callable, MutableMapping
 from ._exceptions import TokenVerificationException
 from ._gated_context import GatedContext
 from ._gatedhouse import Gatedhouse
-from ._web import ForbiddenException, UnauthorizedException
+from ._web import (
+    WWW_AUTHENTICATE_CHALLENGE,
+    ForbiddenException,
+    UnauthorizedException,
+)
 
 __all__ = [
     "CONTEXT_ATTR",
@@ -77,6 +81,11 @@ _SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
     (b"referrer-policy", b"strict-origin-when-cross-origin"),
+)
+
+_WWW_AUTHENTICATE = (
+    b"www-authenticate",
+    WWW_AUTHENTICATE_CHALLENGE.encode("latin-1"),
 )
 
 _Scope = MutableMapping[str, Any]
@@ -112,14 +121,18 @@ def _wrap_send_with_security_headers(send: _Send) -> _Send:
 async def _send_json_error(send: _Send, status: int,
                            error: str, detail: str) -> None:
     body = json.dumps({"error": error, "detail": detail}).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json; charset=utf-8"),
+        (b"content-length", str(len(body)).encode("latin-1")),
+        *_SECURITY_HEADERS,
+    ]
+    # RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
+    if status == 401:
+        headers.append(_WWW_AUTHENTICATE)
     await send({
         "type": "http.response.start",
         "status": status,
-        "headers": [
-            (b"content-type", b"application/json; charset=utf-8"),
-            (b"content-length", str(len(body)).encode("latin-1")),
-            *_SECURITY_HEADERS,
-        ],
+        "headers": headers,
     })
     await send({"type": "http.response.body", "body": body})
 

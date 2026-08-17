@@ -10,7 +10,7 @@ use gatedhouse::{
     AuthenticatedSubject, EffectivePermission, FilterError, GatedContext, Gatedhouse,
     GatedhouseApiFilter, GatedhouseFactory, GatedhouseWebFilter, GroupManager, MembershipManager,
     PermissionCatalog, RoleManager, SphinxClient, TokenVerificationError, TokenVerificationReason,
-    TokenVerifierConfig, WebFilterOutcome,
+    TokenVerifierConfig, WebFilterOutcome, WWW_AUTHENTICATE,
 };
 use serde_json::json;
 
@@ -123,9 +123,15 @@ fn api_filter() {
     let err = f.authenticate(None).unwrap_err();
     assert_eq!(err.status(), 401);
     assert!(err.to_json_body().contains("Missing or invalid Bearer token"));
+    // RFC 6750: 401 carries the bare Bearer challenge; 403 must not.
+    assert_eq!(WWW_AUTHENTICATE, ("WWW-Authenticate", "Bearer"));
+    assert_eq!(err.challenge_header(), Some(WWW_AUTHENTICATE));
     let f_bad = GatedhouseApiFilter::new(Arc::new(StubGh { ok: false }));
     let err = f_bad.authenticate(Some("Bearer bad")).unwrap_err();
     assert!(err.to_json_body().contains("Token verification failed"));
+    assert_eq!(err.challenge_header(), Some(("WWW-Authenticate", "Bearer")));
+    let forbidden = FilterError::Forbidden("x".to_string());
+    assert_eq!(forbidden.challenge_header(), None);
 
     assert!(GatedhouseApiFilter::require_admin(&ctx).is_ok());
     assert!(GatedhouseApiFilter::require_human(&ctx).is_ok());

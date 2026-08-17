@@ -146,6 +146,7 @@ class ApiFilterTest(unittest.TestCase):
         self.assertEqual(rec.status, "401 Unauthorized")
         self.assertIn(b"Missing or invalid Bearer token", body)
         self.assertIn(("X-Content-Type-Options", "nosniff"), rec.headers)
+        self.assertIn(("WWW-Authenticate", "Bearer"), rec.headers)
 
     def test_invalid_token_is_401(self):
         rec = _Recorder()
@@ -154,6 +155,7 @@ class ApiFilterTest(unittest.TestCase):
                           rec.start_response))
         self.assertEqual(rec.status, "401 Unauthorized")
         self.assertIn(b"Token verification failed", body)
+        self.assertIn(("WWW-Authenticate", "Bearer"), rec.headers)
 
     def test_require_helpers(self):
         ctx = GatedContext.from_subject(_SUBJECT)
@@ -175,6 +177,9 @@ class WebFilterTest(unittest.TestCase):
         w({"SCRIPT_NAME": "/myapp"}, rec.start_response)
         self.assertEqual(rec.status, "302 Found")
         self.assertIn(("Location", "/myapp/auth/login"), rec.headers)
+        # RFC 6750 challenge is 401-only; redirects must stay bare.
+        self.assertNotIn("WWW-Authenticate",
+                         [name for name, _ in rec.headers])
 
     def test_valid_session_token_passes_through(self):
         rec = _Recorder()

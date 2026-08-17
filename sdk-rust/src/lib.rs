@@ -39,7 +39,7 @@ pub use error::{GatedhouseError, TokenVerificationError, TokenVerificationReason
 pub use factory::GatedhouseFactory;
 pub use filters::{
     FilterError, GatedhouseApiFilter, GatedhouseWebFilter, WebFilterOutcome, DEFAULT_LOGIN_PATH,
-    DEFAULT_SESSION_TOKEN_ATTR, SECURITY_HEADERS,
+    DEFAULT_SESSION_TOKEN_ATTR, SECURITY_HEADERS, WWW_AUTHENTICATE,
 };
 pub use gated_context::GatedContext;
 pub use gatedhouse::Gatedhouse;

@@ -116,6 +116,7 @@ class ApiFilterTest(unittest.TestCase):
         self.assertEqual(rec.status, 401)
         self.assertIn(b"Missing or invalid Bearer token", rec.body)
         self.assertEqual(rec.headers[b"x-content-type-options"], b"nosniff")
+        self.assertEqual(rec.headers[b"www-authenticate"], b"Bearer")
         self.assertIsNone(rec.scope_seen)  # downstream app never ran
 
     def test_invalid_token_is_401(self):
@@ -124,6 +125,7 @@ class ApiFilterTest(unittest.TestCase):
         rec.run(f, _http_scope(headers=[(b"authorization", b"Bearer bad")]))
         self.assertEqual(rec.status, 401)
         self.assertIn(b"Token verification failed", rec.body)
+        self.assertEqual(rec.headers[b"www-authenticate"], b"Bearer")
 
     def test_lifespan_scope_passes_through(self):
         seen = {}
