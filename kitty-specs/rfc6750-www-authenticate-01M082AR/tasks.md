@@ -74,9 +74,9 @@ Risks: WSGI headers are `(str, str)` tuples, ASGI headers are `(bytes, bytes)` �
 
 Included subtasks:
 
-- [ ] T010 `pub const WWW_AUTHENTICATE: (&str, &str)` + `FilterError::challenge_header()` (WP03)
-- [ ] T011 Re-export from `lib.rs` filters use-block (WP03)
-- [ ] T012 Tests: `Unauthorized → Some(WWW_AUTHENTICATE)`, `Forbidden → None`, exact tuple value (WP03)
+- [x] T010 `pub const WWW_AUTHENTICATE: (&str, &str)` + `FilterError::challenge_header()` (WP03)
+- [x] T011 Re-export from `lib.rs` filters use-block (WP03)
+- [x] T012 Tests: `Unauthorized → Some(WWW_AUTHENTICATE)`, `Forbidden → None`, exact tuple value (WP03)
 
 Implementation sketch: `challenge_header(&self) -> Option<(&'static str, &'static str)>` matching `Unauthorized(_) => Some(WWW_AUTHENTICATE)`, `Forbidden(_) => None`; rustdoc on both explains the host copies it onto the response exactly like `SECURITY_HEADERS`.
 
