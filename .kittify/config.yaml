@@ -1,0 +1,12 @@
+project:
+  uuid: 280137bc-1737-46d7-880d-c07b60b06f89
+  slug: 12v-gatedhouse-lib
+  node_id: b805cd5cee74
+  build_id: 0f01a25a-2fa2-5ebf-8dc3-e23c887d30ce
+vcs:
+  type: git
+agents:
+  available:
+  - claude
+  auto_commit: true
+  lint_on_edit: false
