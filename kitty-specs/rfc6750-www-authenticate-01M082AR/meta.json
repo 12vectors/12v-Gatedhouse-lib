@@ -1,0 +1,15 @@
+{
+  "coordination_branch": "kitty/mission-rfc6750-www-authenticate-01M082AR",
+  "created_at": "2026-08-17T14:34:41.022079+00:00",
+  "flattened": false,
+  "friendly_name": "RFC 6750 WWW-Authenticate Header",
+  "mission_id": "01M082ARZXGNY8CD09TVYNXHB8",
+  "mission_number": null,
+  "mission_slug": "rfc6750-www-authenticate-01M082AR",
+  "mission_type": "software-dev",
+  "purpose_context": "Gatedhouse's API guards in all three SDKs (Java servlet filter, Python WSGI/ASGI middleware, Rust framework-agnostic filters) return 401 with a JSON body but omit the WWW-Authenticate response header that RFC 6750 requires. Adding the bare Bearer challenge keeps generic HTTP tooling, SDK clients, and API gateways interoperable without changing any existing response body or security header.",
+  "purpose_tldr": "Make 401 responses from Gatedhouse web guards standards-compliant so any HTTP client can discover that Bearer authentication is required.",
+  "slug": "rfc6750-www-authenticate-01M082AR",
+  "target_branch": "claude/library-parity-python-rust-java-30h29l",
+  "topology": "coord"
+}
