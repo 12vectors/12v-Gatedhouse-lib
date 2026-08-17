@@ -4,12 +4,12 @@ artifact_type: spec-kitty.analysis-report
 command: /spec-kitty.analyze
 mission_slug: rfc6750-www-authenticate-01M082AR
 mission_id: 01M082ARZXGNY8CD09TVYNXHB8
-generated_at: '2026-08-17T14:55:08.692116+00:00'
+generated_at: '2026-08-17T14:59:27.375400+00:00'
 analyzer_agent: unknown
 input_artifacts:
   spec.md:
     path: /home/user/12v-Gatedhouse-lib/kitty-specs/rfc6750-www-authenticate-01M082AR/spec.md
-    sha256: e9c5af308bc77c5afaef543a11823dc7d5c194d2ca703e5d5b55b05ae27dc072
+    sha256: 7bd24ceae67f6e0a42b1c94b6ce66aa405b216e5fea816dec0f46a3edc5b86d9
   plan.md:
     path: /home/user/12v-Gatedhouse-lib/kitty-specs/rfc6750-www-authenticate-01M082AR/plan.md
     sha256: d866a3e4fd1efbde570256c9994f5fb5b4518c917507d6f1a8a790d308d9fae9
@@ -21,16 +21,12 @@ input_artifacts:
     sha256:
 verdict: ready
 issue_counts:
-  critical: 0
-  medium: 1
   low: 2
+  medium: 0
+  critical: 0
   high: 0
   info: 0
 findings:
-- id: I1
-  severity: medium
-  category: inconsistency
-  summary: spec.md Testing Expectations says each SDK's *existing* 401 test paths are extended, but sdk-java has no existing test infrastructure; WP01 creates it from scratch (JUnit 5 + first test), so spec wording and task reality diverge.
 - id: C1
   severity: low
   category: coverage
@@ -45,7 +41,6 @@ findings:
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
-| I1 | Inconsistency | MEDIUM | spec.md Testing Expectations; tasks.md WP01 (T002-T003) | Spec says "each SDK's existing 401 test paths are extended", but sdk-java has no tests at all — WP01 stands up JUnit 5 infrastructure and writes the first test. Spec wording predates the discovery made during /tasks. | Either amend the spec sentence to "extended or created where absent", or accept tasks.md as the authoritative refinement; no functional impact. |
 | C1 | Coverage | LOW | spec.md NFR-001; tasks.md | The zero-latency NFR has no measuring subtask (no benchmark). It is satisfied structurally (single constant tuple appended on the 401 failure path only) and checked in review, not by a task. | Acceptable at this scale; reviewers of WP01-WP03 should confirm no work happens on the authenticated (happy) path. |
 | U1 | Underspecification | LOW | tasks/WP02 T006 | The WSGI snippet (`headers.append(...)`) presumes a specific local structure in `_send_json_error`; actual helper may compose headers via `_with_security_headers`. The prompt flags "adapt to actual variable names", but the snippet could be copied literally. | Implementer must read the helper before editing; reviewer checks the header is absent on 403/302 paths. |
 
@@ -74,3 +69,5 @@ findings:
 - Ambiguity Count: 0
 - Duplication Count: 0
 - Critical Issues Count: 0
+
+**Resolved since prior analysis:** I1 (spec Testing Expectations wording) — fixed in commit 7f23dfa.
