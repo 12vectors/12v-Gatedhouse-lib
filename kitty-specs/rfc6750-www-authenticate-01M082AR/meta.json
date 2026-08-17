@@ -11,5 +11,7 @@
   "purpose_tldr": "Make 401 responses from Gatedhouse web guards standards-compliant so any HTTP client can discover that Bearer authentication is required.",
   "slug": "rfc6750-www-authenticate-01M082AR",
   "target_branch": "claude/library-parity-python-rust-java-30h29l",
-  "topology": "coord"
+  "topology": "coord",
+  "vcs": "git",
+  "vcs_locked_at": "2026-08-17T15:02:11.930381+00:00"
 }

@@ -22,7 +22,8 @@ subtasks:
 - T007
 - T008
 - T009
-agent: claude
+agent: "claude"
+shell_pid: "29244"
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
 agent_profile: python-pedro
@@ -138,3 +139,7 @@ In `sdk-python/tests/test_asgi.py`:
 Watch the str/bytes split: WSGI must send `("WWW-Authenticate", "Bearer")`
 str tuple, ASGI must send lowercase `b"www-authenticate"` bytes pair. Reject
 if the header leaks onto 403 or redirect paths.
+
+## Activity Log
+
+- 2026-08-17T15:06:04Z – claude – shell_pid=29244 – Assigned agent via action command

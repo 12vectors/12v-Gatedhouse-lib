@@ -16,6 +16,14 @@ Generated: 2026-08-17T15:00:30Z
   SDK's behavior.
 - **Shared schema ownership**: all SDKs run the same `gatedhouse.*` Postgres
   migrations; schema changes are a single migration consumed by all three.
+- **Minimize external dependencies (MUST)**: prefer stdlib/platform APIs over
+  third-party packages in all SDKs. Adding or upgrading a *runtime* dependency
+  requires explicit justification in the mission spec/plan and reviewer
+  sign-off; prefer reusing a dependency the SDK already carries. Test- and
+  build-scoped dependencies are acceptable but kept lean. Current runtime
+  baselines to preserve: Python guards are stdlib-only; Java carries only the
+  Postgres driver (runtime) + Nimbus JOSE (compile) + servlet API (provided);
+  Rust reuses `ureq`/`serde_json`/`postgres` rather than adding new crates.
 
 ## Testing Standards
 

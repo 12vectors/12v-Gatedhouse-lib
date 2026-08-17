@@ -20,7 +20,8 @@ subtasks:
 - T002
 - T003
 - T004
-agent: claude
+agent: "claude"
+shell_pid: "27535"
 history:
 - '2026-08-17: created by /spec-kitty.tasks'
 agent_profile: java-jenny
@@ -154,3 +155,10 @@ In the same two tests, additionally assert (constraints C-001/C-002):
 Diff should be small: ~6 lines in the filter, a test-scope pom addition, one
 new test file. Reject if the header write is unconditional (not gated on 401)
 or if any runtime dependency scope changed.
+
+## Activity Log
+
+- 2026-08-17T15:02:15Z – claude – shell_pid=22810 – Assigned agent via action command
+- 2026-08-17T15:04:37Z – claude – shell_pid=22810 – Ready for review: 3/3 tests green
+- 2026-08-17T15:05:02Z – claude – shell_pid=27535 – Started review via action command
+- 2026-08-17T15:05:36Z – user – shell_pid=27535 – Review passed: conditional 401 challenge, test-scope-only deps, invariants asserted, 3/3 green
