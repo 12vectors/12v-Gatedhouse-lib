@@ -586,8 +586,8 @@ GatedhouseConfig config = GatedhouseConfig.builder()
     // Optional — only set if you want gh.verifyToken(...) to work
     .tokenVerifier(TokenVerifierConfig.builder()
         .jwksUri(URI.create(
-            "https://auth.example.com/api/sphinx/v1/.well-known/jwks.json"))
-        .issuer("https://auth.example.com")
+            "https://auth.example.com/api/sphinx/v1/auth/jwks"))
+        .issuer("sphinx")
         .audience("superagent-platform")
         .build())
     // Optional — defaults to LocalGroupSource (host owns group writes)
@@ -713,8 +713,8 @@ GatedhouseConfig config = GatedhouseConfig.builder()
     .database(db)
     .tokenVerifier(TokenVerifierConfig.builder()
         .jwksUri(URI.create(
-            "https://auth.example.com/api/sphinx/v1/.well-known/jwks.json"))
-        .issuer("https://auth.example.com")
+            "https://auth.example.com/api/sphinx/v1/auth/jwks"))
+        .issuer("sphinx")
         .audience("superagent-platform")
         .build())
     .build();

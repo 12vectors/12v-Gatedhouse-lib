@@ -114,8 +114,8 @@ The WSGI components:
 from gatedhouse import GatedhouseApiFilter, GatedhouseFactory, SphinxClient, TokenVerifierConfig
 
 gh = GatedhouseFactory.create_just_token_verifier(
-    TokenVerifierConfig(jwks_uri="https://sphinx.12v.sh/api/sphinx/v1/.well-known/jwks.json",
-                        issuer="https://sphinx.12v.sh", audience="my-app"))
+    TokenVerifierConfig(jwks_uri="https://sphinx.12v.sh/api/sphinx/v1/auth/jwks",
+                        issuer="sphinx", audience="my-app"))
 app = GatedhouseApiFilter(my_wsgi_app, gh)   # 401s anything without a valid Bearer token
 
 sphinx = SphinxClient("https://sphinx.12v.sh", "client_id", "client_secret")
@@ -136,8 +136,8 @@ Rust has no servlet-like standard interface, so the Rust SDK exposes the same de
 use gatedhouse::{GatedhouseApiFilter, GatedhouseFactory, SphinxClient, TokenVerifierConfig};
 
 let gh = GatedhouseFactory::create_just_token_verifier(TokenVerifierConfig::new(
-    "https://sphinx.12v.sh/api/sphinx/v1/.well-known/jwks.json",
-    "https://sphinx.12v.sh",
+    "https://sphinx.12v.sh/api/sphinx/v1/auth/jwks",
+    "sphinx",
     "my-app",
 ));
 let filter = GatedhouseApiFilter::new(gh);
