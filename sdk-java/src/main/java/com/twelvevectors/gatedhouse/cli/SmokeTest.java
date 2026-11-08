@@ -9,11 +9,17 @@ import com.twelvevectors.gatedhouse.EffectivePermission;
 import com.twelvevectors.gatedhouse.EntityType;
 import com.twelvevectors.gatedhouse.Gatedhouse;
 import com.twelvevectors.gatedhouse.GatedhouseConfig;
+import com.twelvevectors.gatedhouse.GatedhouseDatabaseException;
 import com.twelvevectors.gatedhouse.GatedhouseFactory;
+import com.twelvevectors.gatedhouse.GrantPath;
 import com.twelvevectors.gatedhouse.InMemoryPermissionCache;
 import com.twelvevectors.gatedhouse.MembershipStatus;
+import com.twelvevectors.gatedhouse.PermissionExplanation;
+import com.twelvevectors.gatedhouse.PermissionExplanation.Outcome;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
@@ -40,6 +46,10 @@ public final class SmokeTest {
     private static final String IDENTITY_ALICE = "smoketestalice";
     private static final String IDENTITY_BOB   = "smoketestbob";
     private static final String GROUP_ENG    = "smoketestgroup";
+    private static final String IDENTITY_CAROL = "smoketestcarol";
+    private static final String IDENTITY_DAVE  = "smoketestdave";
+    private static final String IDENTITY_ERIN  = "smoketesterin";
+    private static final String IDENTITY_GHOST = "smoketestghost";
 
     private static int passed = 0;
     private static int failed = 0;
@@ -75,6 +85,8 @@ public final class SmokeTest {
                 setupCatalog(gh);
                 setupRolesAndMemberships(gh);
                 runScenarios(gh);
+                runLifecycleScenarios(gh, database);
+                runExplainScenarios(gh);
                 runCacheScenarios(gh, cache);
                 // TTL test uses a second Gatedhouse with a tiny-TTL cache,
                 // sharing the same DB and fixtures.
@@ -239,6 +251,209 @@ public final class SmokeTest {
             !gh.hasPermission("noSuchIdentity", ORG, SVC, RES_PROJ, ACT_READ));
         check("unknown identity has empty effective perms",
             gh.getEffectivePermissions("noSuchIdentity", ORG).isEmpty());
+    }
+
+    // ---- membership lifecycle (docs/MODEL.md) -------------------------------
+
+    @SuppressWarnings("removal")  // exercises the deprecated deleteMembership
+    private static void runLifecycleScenarios(Gatedhouse gh, Database database) {
+        var members = gh.membershipManager();
+        var roles = gh.roleManager();
+
+        section("Lifecycle: removal revokes grants and keeps the row");
+        members.createMembership(IDENTITY_CAROL, ORG, EntityType.USER);
+        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);
+        gh.groupManager().addIdentityToGroup(GROUP_ENG, ORG, IDENTITY_CAROL);
+        check("carol can write (direct editor) before removal",
+            gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
+        check("carol can deploy (group deployer) before removal",
+            gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_DEPLOY));
+        int roleDeletesBefore  = auditDeletes(database, "role_assignments",  IDENTITY_CAROL);
+        int groupDeletesBefore = auditDeletes(database, "group_memberships", IDENTITY_CAROL);
+        members.removeMembership(IDENTITY_CAROL, ORG);
+        check("status is REMOVED",
+            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.REMOVED);
+        check("hasMembership is false for a removed membership",
+            !members.hasMembership(IDENTITY_CAROL, ORG));
+        check("membership row is kept",
+            membershipRows(database, IDENTITY_CAROL) == 1);
+        check("carol can no longer write", !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
+        check("carol can no longer deploy", !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_DEPLOY));
+        check("direct roles revoked", gh.getRoles(IDENTITY_CAROL, ORG).isEmpty());
+        check("group memberships revoked", gh.getGroups(IDENTITY_CAROL, ORG).isEmpty());
+        check("audit log records the role-assignment delete",
+            auditDeletes(database, "role_assignments", IDENTITY_CAROL) == roleDeletesBefore + 1);
+        check("audit log records the group-membership delete",
+            auditDeletes(database, "group_memberships", IDENTITY_CAROL) == groupDeletesBefore + 1);
+
+        section("Lifecycle: REMOVED -> SUSPENDED is rejected");
+        boolean rejected = false;
+        try {
+            members.setStatus(IDENTITY_CAROL, ORG, MembershipStatus.SUSPENDED);
+        } catch (IllegalStateException e) {
+            rejected = true;
+        }
+        check("setStatus(SUSPENDED) on a removed membership throws IllegalStateException", rejected);
+        check("status is still REMOVED after the rejected transition",
+            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.REMOVED);
+
+        section("Lifecycle: a grant made after removal is inert, then cleared on rejoin");
+        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);
+        check("late grant does not apply while removed",
+            !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
+        members.createMembership(IDENTITY_CAROL, ORG, EntityType.USER);
+        check("createMembership revives the removed membership as ACTIVE",
+            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.ACTIVE);
+        check("revival reuses the same row", membershipRows(database, IDENTITY_CAROL) == 1);
+        check("rejoin starts from a clean slate (late grant cleared)",
+            gh.getRoles(IDENTITY_CAROL, ORG).isEmpty());
+        check("rejoined carol cannot write",
+            !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
+
+        section("Lifecycle: setStatus(PENDING) also revives with a clean slate");
+        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);
+        members.removeMembership(IDENTITY_CAROL, ORG);
+        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);  // late grant again
+        members.setStatus(IDENTITY_CAROL, ORG, MembershipStatus.PENDING);
+        check("status is PENDING",
+            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.PENDING);
+        check("grants cleared on revival via setStatus", gh.getRoles(IDENTITY_CAROL, ORG).isEmpty());
+        members.setStatus(IDENTITY_CAROL, ORG, MembershipStatus.ACTIVE);
+        check("activating after revival grants nothing old",
+            !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
+
+        section("Lifecycle: deprecated deleteMembership now removes, keeping the row");
+        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);
+        members.deleteMembership(IDENTITY_CAROL, ORG);
+        check("deleteMembership leaves status REMOVED",
+            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.REMOVED);
+        check("deleteMembership keeps the row", membershipRows(database, IDENTITY_CAROL) == 1);
+        check("deleteMembership revokes grants", gh.getRoles(IDENTITY_CAROL, ORG).isEmpty());
+
+        section("Lifecycle: suspension keeps grants");
+        members.createMembership(IDENTITY_DAVE, ORG, EntityType.USER);
+        roles.assignToIdentity(IDENTITY_DAVE, ORG, ROLE_VIEWER);
+        members.setStatus(IDENTITY_DAVE, ORG, MembershipStatus.SUSPENDED);
+        check("suspended dave cannot read", !gh.hasPermission(IDENTITY_DAVE, ORG, SVC, RES_PROJ, ACT_READ));
+        check("suspended dave keeps his role", gh.getRoles(IDENTITY_DAVE, ORG).contains(ROLE_VIEWER));
+        members.setStatus(IDENTITY_DAVE, ORG, MembershipStatus.ACTIVE);
+        check("reactivated dave can read again", gh.hasPermission(IDENTITY_DAVE, ORG, SVC, RES_PROJ, ACT_READ));
+
+        section("Lifecycle: createMembership on a live membership still fails");
+        boolean duplicateRejected = false;
+        try {
+            members.createMembership(IDENTITY_DAVE, ORG, EntityType.USER);
+        } catch (GatedhouseDatabaseException e) {
+            duplicateRejected = e.getCause() instanceof SQLException sql && "23505".equals(sql.getSQLState());
+        }
+        check("duplicate createMembership raises the unique violation as before", duplicateRejected);
+
+        section("Lifecycle: removeMembership with no membership clears stray grants");
+        roles.assignToIdentity(IDENTITY_GHOST, ORG, ROLE_VIEWER);
+        check("stray grant exists without a membership", gh.getRoles(IDENTITY_GHOST, ORG).contains(ROLE_VIEWER));
+        members.removeMembership(IDENTITY_GHOST, ORG);
+        check("stray grant cleared", gh.getRoles(IDENTITY_GHOST, ORG).isEmpty());
+        check("no membership row created", members.getStatus(IDENTITY_GHOST, ORG).isEmpty());
+    }
+
+    // ---- explain (docs/MODEL.md, "Explaining a decision") ------------------
+
+    private static void runExplainScenarios(Gatedhouse gh) {
+        var members = gh.membershipManager();
+        var roles = gh.roleManager();
+        members.createMembership(IDENTITY_ERIN, ORG, EntityType.USER);
+        roles.assignToIdentity(IDENTITY_ERIN, ORG, ROLE_EDITOR);   // editor -> viewer -> (projects, read)
+        roles.assignToIdentity(IDENTITY_ERIN, ORG, ROLE_READER);   // (svc, *, read)
+        gh.groupManager().addIdentityToGroup(GROUP_ENG, ORG, IDENTITY_ERIN);  // group -> deployer
+
+        section("Explain: every path, through inheritance and wildcards");
+        PermissionExplanation read = gh.explainPermission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ);
+        check("read is ALLOWED", read.outcome() == Outcome.ALLOWED && read.allowed());
+        check("membership status reported as ACTIVE", read.membershipStatus() == MembershipStatus.ACTIVE);
+        check("two paths grant read", read.paths().size() == 2);
+        check("inherited path: DIRECT [editor, viewer] -> (svc, projects, read)",
+            read.paths().stream().anyMatch(p ->
+                p.source() == GrantPath.Source.DIRECT
+                && p.roleChain().equals(List.of(ROLE_EDITOR, ROLE_VIEWER))
+                && p.assignedRole().equals(ROLE_EDITOR) && p.grantingRole().equals(ROLE_VIEWER)
+                && p.grant().equals(new EffectivePermission(SVC, RES_PROJ, ACT_READ))));
+        check("wildcard path: DIRECT [reader] -> (svc, *, read)",
+            read.paths().stream().anyMatch(p ->
+                p.source() == GrantPath.Source.DIRECT
+                && p.roleChain().equals(List.of(ROLE_READER))
+                && p.grant().equals(new EffectivePermission(SVC, null, ACT_READ))));
+
+        PermissionExplanation deploy = gh.explainPermission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DEPLOY);
+        check("deploy is ALLOWED via one path", deploy.allowed() && deploy.paths().size() == 1);
+        GrantPath viaGroup = deploy.paths().get(0);
+        check("group path names its source and group",
+            viaGroup.source() == GrantPath.Source.GROUP && GROUP_ENG.equals(viaGroup.groupId())
+            && viaGroup.roleChain().equals(List.of(ROLE_DEPLOYER)));
+
+        section("Explain: denials say why");
+        PermissionExplanation delete = gh.explainPermission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DELETE);
+        check("delete is NO_MATCHING_GRANT with no paths",
+            delete.outcome() == Outcome.NO_MATCHING_GRANT && delete.paths().isEmpty() && !delete.allowed());
+
+        members.setStatus(IDENTITY_ERIN, ORG, MembershipStatus.SUSPENDED);
+        PermissionExplanation suspended = gh.explainPermission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ);
+        check("suspended read is MEMBERSHIP_NOT_ACTIVE", suspended.outcome() == Outcome.MEMBERSHIP_NOT_ACTIVE);
+        check("suspended explanation still shows what reactivation restores", suspended.paths().size() == 2);
+        check("explain and hasPermission agree for the suspended member",
+            suspended.allowed() == gh.hasPermission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ));
+        members.setStatus(IDENTITY_ERIN, ORG, MembershipStatus.ACTIVE);
+
+        PermissionExplanation unknown = gh.explainPermission("noSuchIdentity", ORG, SVC, RES_PROJ, ACT_READ);
+        check("unknown identity is NO_MEMBERSHIP with no status and no paths",
+            unknown.outcome() == Outcome.NO_MEMBERSHIP && unknown.membershipStatus() == null
+            && unknown.paths().isEmpty());
+
+        roles.assignToIdentity(IDENTITY_GHOST, ORG, ROLE_VIEWER);  // stray grant, no membership
+        PermissionExplanation stray = gh.explainPermission(IDENTITY_GHOST, ORG, SVC, RES_PROJ, ACT_READ);
+        check("stray grant is surfaced: NO_MEMBERSHIP with one path",
+            stray.outcome() == Outcome.NO_MEMBERSHIP && stray.paths().size() == 1);
+
+        section("Explain: agrees with hasPermission everywhere");
+        int disagreements = 0;
+        String[] identities = {IDENTITY_ALICE, IDENTITY_BOB, IDENTITY_CAROL, IDENTITY_DAVE,
+                               IDENTITY_ERIN, IDENTITY_GHOST, "noSuchIdentity"};
+        String[][] permissions = {{RES_PROJ, ACT_READ}, {RES_PROJ, ACT_WRITE}, {RES_PROJ, ACT_DELETE},
+                                  {RES_PROJ, ACT_DEPLOY}, {RES_DOC, ACT_READ}};
+        for (String identity : identities) {
+            for (String[] p : permissions) {
+                if (gh.explainPermission(identity, ORG, SVC, p[0], p[1]).allowed()
+                        != gh.hasPermission(identity, ORG, SVC, p[0], p[1])) {
+                    disagreements++;
+                }
+            }
+        }
+        check("explain().allowed() == hasPermission() for 35 identity/permission pairs", disagreements == 0);
+    }
+
+    private static int auditDeletes(Database database, String table, String identityId) {
+        return count(database,
+            "SELECT count(*) FROM gatedhouse.audit_log "
+            + "WHERE table_name = 'gatedhouse." + table + "' AND op = 'DELETE' "
+            + "AND old_row->>'identity_id' = ?", identityId);
+    }
+
+    private static int membershipRows(Database database, String identityId) {
+        return count(database,
+            "SELECT count(*) FROM gatedhouse.memberships WHERE identity_id = ? AND org_id = '" + ORG + "'",
+            identityId);
+    }
+
+    private static int count(Database database, String sql, String param) {
+        try (Connection conn = database.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, param);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Smoke test query failed: " + sql, e);
+        }
     }
 
     // ---- cache scenarios ---------------------------------------------------

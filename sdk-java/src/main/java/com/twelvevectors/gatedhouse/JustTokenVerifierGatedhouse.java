@@ -54,6 +54,12 @@ final class JustTokenVerifierGatedhouse implements Gatedhouse {
     }
 
     @Override
+    public PermissionExplanation explainPermission(String identityId, String orgId,
+                                                   String service, String resource, String action) {
+        throw new UnsupportedOperationException("Database operations not supported on token-verifier-only instance");
+    }
+
+    @Override
     public List<String> getRoles(String identityId, String orgId) {
         throw new UnsupportedOperationException("Database operations not supported on token-verifier-only instance");
     }

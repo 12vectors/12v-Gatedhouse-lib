@@ -72,6 +72,20 @@ public interface Gatedhouse extends AutoCloseable {
     List<EffectivePermission> getEffectivePermissions(String identityId, String orgId);
 
     /**
+     * Explains the decision {@link #hasPermission} makes for the same inputs:
+     * the identity's membership status, and every path through which it holds
+     * the permission (direct or via a group, through role inheritance, to the
+     * matching grant). Paths are reported even when the decision is a denial,
+     * so a suspended member's explanation shows what reactivation would
+     * restore.
+     *
+     * <p>A diagnostic, not a hot-path check: it bypasses the permission cache
+     * and always reads the database.
+     */
+    PermissionExplanation explainPermission(String identityId, String orgId,
+                                            String service, String resource, String action);
+
+    /**
      * All role keys directly assigned to the identity in the given org
      * (does not include parent roles inherited via the DAG).
      */

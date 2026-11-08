@@ -115,6 +115,95 @@ final class DefaultGatedhouse implements Gatedhouse {
         return groupManager.getIdentityGroups(identityId, orgId);
     }
 
+    @Override
+    public PermissionExplanation explainPermission(String identityId, String orgId,
+                                                   String service, String resource, String action) {
+        // One statement, so the status and the paths come from one snapshot.
+        // The path search mirrors loadEffectivePermissions (same sources, same
+        // inheritance climb, same column-wise wildcard rule as matches()) but
+        // carries the role chain, and reports paths whatever the status is.
+        String sql =
+            "WITH RECURSIVE sources AS ( "
+            + "    SELECT 'DIRECT' AS source, NULL::TEXT AS group_id, role_key "
+            + "    FROM gatedhouse.role_assignments "
+            + "    WHERE identity_id = ? AND org_id = ? "
+            + "    UNION ALL "
+            + "    SELECT 'GROUP', gm.group_id, gr.role_key "
+            + "    FROM gatedhouse.group_memberships gm "
+            + "    JOIN gatedhouse.group_roles gr "
+            + "      ON gr.group_id = gm.group_id AND gr.org_id = gm.org_id "
+            + "    WHERE gm.identity_id = ? AND gm.org_id = ? "
+            + "), "
+            + "chains AS ( "
+            + "    SELECT source, group_id, role_key AS at_role, ARRAY[role_key] AS chain "
+            + "    FROM sources "
+            + "    UNION ALL "
+            + "    SELECT c.source, c.group_id, ri.parent_key, c.chain || ri.parent_key "
+            + "    FROM chains c "
+            + "    JOIN gatedhouse.role_inherits ri ON ri.child_key = c.at_role "
+            + "    WHERE NOT (ri.parent_key = ANY (c.chain)) "
+            + "), "
+            + "paths AS ( "
+            + "    SELECT c.source, c.group_id, c.chain, rp.service, rp.resource, rp.action "
+            + "    FROM chains c "
+            + "    JOIN gatedhouse.role_permissions rp ON rp.role_key = c.at_role "
+            + "    WHERE (rp.service  IS NULL OR rp.service  = ?) "
+            + "      AND (rp.resource IS NULL OR rp.resource = ?) "
+            + "      AND (rp.action   IS NULL OR rp.action   = ?) "
+            + ") "
+            + "SELECT (SELECT status::TEXT FROM gatedhouse.memberships "
+            + "        WHERE identity_id = ? AND org_id = ?) AS status, "
+            + "       p.source, p.group_id, p.chain, p.service, p.resource, p.action "
+            + "FROM (SELECT 1) AS one "
+            + "LEFT JOIN paths p ON TRUE "
+            + "ORDER BY p.source, p.group_id NULLS FIRST, cardinality(p.chain), p.chain";
+
+        try (Connection conn = config.database().getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, identityId);
+            ps.setString(2, orgId);
+            ps.setString(3, identityId);
+            ps.setString(4, orgId);
+            ps.setString(5, service);
+            ps.setString(6, resource);
+            ps.setString(7, action);
+            ps.setString(8, identityId);
+            ps.setString(9, orgId);
+            MembershipStatus status = null;
+            List<GrantPath> paths = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String statusValue = rs.getString("status");
+                    status = statusValue == null ? null : MembershipStatus.fromDbValue(statusValue);
+                    String source = rs.getString("source");
+                    if (source == null) {
+                        continue;  // the LEFT JOIN's placeholder row: no paths
+                    }
+                    String[] chain = (String[]) rs.getArray("chain").getArray();
+                    paths.add(new GrantPath(
+                        GrantPath.Source.valueOf(source),
+                        rs.getString("group_id"),
+                        List.of(chain),
+                        new EffectivePermission(
+                            rs.getString("service"), rs.getString("resource"), rs.getString("action"))));
+                }
+            }
+            PermissionExplanation.Outcome outcome;
+            if (status == null) {
+                outcome = PermissionExplanation.Outcome.NO_MEMBERSHIP;
+            } else if (status != MembershipStatus.ACTIVE) {
+                outcome = PermissionExplanation.Outcome.MEMBERSHIP_NOT_ACTIVE;
+            } else if (paths.isEmpty()) {
+                outcome = PermissionExplanation.Outcome.NO_MATCHING_GRANT;
+            } else {
+                outcome = PermissionExplanation.Outcome.ALLOWED;
+            }
+            return new PermissionExplanation(outcome, status, paths);
+        } catch (SQLException e) {
+            throw new GatedhouseDatabaseException("explainPermission failed", e);
+        }
+    }
+
     // ---- cache control ----------------------------------------------------
 
     @Override

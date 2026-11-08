@@ -4,11 +4,20 @@
 
 package com.twelvevectors.gatedhouse;
 
+/**
+ * Lifecycle status of a membership. Only {@link #ACTIVE} lets the identity's
+ * grants in the org count. See docs/MODEL.md, "The membership lifecycle".
+ */
 public enum MembershipStatus {
 
+    /** A member in good standing: grants apply. */
     ACTIVE("active"),
+    /** Temporarily barred: grants are kept but ignored until reactivated. */
     SUSPENDED("suspended"),
-    PENDING("pending");
+    /** Invited or being provisioned: grants may be prepared but are ignored. */
+    PENDING("pending"),
+    /** Has left the org: grants were revoked; the row remains as history. */
+    REMOVED("removed");
 
     private final String dbValue;
 

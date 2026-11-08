@@ -11,7 +11,7 @@ import java.sql.SQLException;
 
 final class SchemaCheck {
 
-    static final int EXPECTED_VERSION = 1;
+    static final int EXPECTED_VERSION = 2;
 
     private SchemaCheck() {
     }

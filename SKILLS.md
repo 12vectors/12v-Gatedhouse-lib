@@ -212,6 +212,13 @@ The three SDKs share **the same architecture, class names, and operation semanti
 | `gh.membershipManager().createMembership(id, org, EntityType.USER)` | `gh.membership_manager().create_membership(id, org, EntityType.USER)` | `gh.membership_manager().create_membership(id, org, EntityType::User)?` |
 | `.setStatus(id, org, MembershipStatus.SUSPENDED)` | `.set_status(id, org, MembershipStatus.SUSPENDED)` | `.set_status(id, org, MembershipStatus::Suspended)?` |
 | `.getStatus(id, org)` → `Optional<MembershipStatus>` | `.get_status(id, org)` → `MembershipStatus \| None` | `.get_status(id, org)?` → `Option<MembershipStatus>` |
+| `.removeMembership(id, org)`: status `REMOVED`, revokes grants in the org | *(port pending)* | *(port pending)* |
+
+### Explaining a decision
+
+| Java | Python | Rust |
+|---|---|---|
+| `gh.explainPermission(id, org, svc, res, act)` → `PermissionExplanation` (outcome, membership status, every `GrantPath`) | *(port pending)* | *(port pending)* |
 
 ### Groups
 
@@ -349,6 +356,8 @@ Exit code 0 = all checks pass.
 
 ## Core Concepts
 
+> The definitive description of the model (concepts, the membership lifecycle, and the decisions behind them, with a worked example) is [docs/MODEL.md](docs/MODEL.md). The most important convention: **roles are global capabilities tied to the platform's functionality; groups are per-org titles and teams.** Per-org variation comes from which roles a group holds, never from changing what a role means.
+
 ### Why these layers exist
 
 Authorization here is deliberately layered. The layers are independent, and not every host needs all of them — this map says what each one is *for*, why it isn't folded into another, and when you can leave it empty.
@@ -394,18 +403,21 @@ Each identity has an `EntityType` (`USER` or `AGENT`) recorded on its membership
 
 A `Membership` is the per-org link between an identity and the system. It carries:
 
-- `entity_type` (`USER` / `AGENT`)
-- `status` (`ACTIVE` / `SUSPENDED` / `PENDING`)
+- `entity_type` (`USER` / `AGENT`): a descriptive label today; see [docs/MODEL.md](docs/MODEL.md#entity-type)
+- `status` (`ACTIVE` / `SUSPENDED` / `PENDING` / `REMOVED`)
 
 Status drives the decision flow:
 
-| Status | Behavior in `hasPermission` |
-|---|---|
-| `ACTIVE` | Normal evaluation |
-| `SUSPENDED` | **Short-circuits to DENY** before any permission check |
-| `PENDING` | **Short-circuits to DENY** — the host has registered the membership but the identity is not yet provisioned for use |
+| Status | Behavior in `hasPermission` | Grants |
+|---|---|---|
+| `ACTIVE` | Normal evaluation | apply |
+| `SUSPENDED` | **Short-circuits to DENY** before any permission check | kept; reactivating restores them |
+| `PENDING` | **Short-circuits to DENY**: the host has registered the membership but the identity is not yet provisioned for use | may be prepared in advance |
+| `REMOVED` | **Short-circuits to DENY** | revoked when the membership is removed |
 
 The host moves between states with `gh.membershipManager().setStatus(identityId, orgId, status)`.
+
+**Memberships are never deleted.** An identity that leaves an org moves to `REMOVED` (`removeMembership`), which revokes its direct roles and group memberships in that org in the same transaction and keeps the row as history. Rejoining (`createMembership`, or `setStatus` to `ACTIVE`/`PENDING`) revives the same row with a clean slate. `REMOVED → SUSPENDED` is rejected. `deleteMembership` is deprecated and now performs a removal. The full lifecycle, and the reasoning behind it, are in [docs/MODEL.md](docs/MODEL.md#the-membership-lifecycle).
 
 ### Roles, inheritance, and group assignments
 
@@ -518,8 +530,10 @@ com.twelvevectors.gatedhouse
 │
 ├── Value types
 │   ├── EntityType              (USER, AGENT)
-│   ├── MembershipStatus        (ACTIVE, SUSPENDED, PENDING)
+│   ├── MembershipStatus        (ACTIVE, SUSPENDED, PENDING, REMOVED)
 │   ├── EffectivePermission     (record: service, resource, action)
+│   ├── PermissionExplanation   (record: outcome, membershipStatus, paths)
+│   ├── GrantPath               (record: source, groupId, roleChain, grant)
 │   └── AuthenticatedSubject    (record: id, issuer, audience, …)
 │
 ├── Exceptions (all RuntimeException)
@@ -943,7 +957,7 @@ The library invalidates automatically on every write through its API:
 
 | Write | Invalidation |
 |---|---|
-| `membershipManager.createMembership` / `deleteMembership` / `setStatus` | targeted: `(identityId, orgId)` |
+| `membershipManager.createMembership` / `removeMembership` / `setStatus` (and the deprecated `deleteMembership`) | targeted: `(identityId, orgId)` |
 | `roleManager.assignToIdentity` / `revokeFromIdentity` | targeted: `(identityId, orgId)` |
 | `groupManager.addIdentityToGroup` / `removeIdentityFromGroup` | targeted: `(identityId, orgId)` |
 | `roleManager.deleteRole` / `grantPermission` / `revokePermission` | wholesale (`invalidateAll`) |
