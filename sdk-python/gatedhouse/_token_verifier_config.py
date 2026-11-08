@@ -22,3 +22,15 @@ class TokenVerifierConfig:
     jwks_uri: str
     issuer: str
     audience: str
+    #: The longest any single network wait may take while fetching the JWKS,
+    #: in seconds. A fetch that fails or times out raises
+    #: ``TokenVerificationException`` with reason ``JWKS_UNAVAILABLE``.
+    jwks_timeout: float = 5.0
+
+    #: The JWKS fetch timeout used when none is given, in seconds.
+    DEFAULT_JWKS_TIMEOUT = 5.0
+
+    def __post_init__(self) -> None:
+        t = self.jwks_timeout
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not t > 0:
+            raise ValueError(f"jwks_timeout must be a positive number of seconds, got {t!r}")

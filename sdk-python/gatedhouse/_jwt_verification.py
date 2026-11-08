@@ -44,7 +44,7 @@ class JwtVerification:
         self._issuer = config.issuer
         self._audience = config.audience
         # PyJWKClient handles JWKS fetching, caching, and key rotation.
-        self._jwks_client = PyJWKClient(config.jwks_uri)
+        self._jwks_client = PyJWKClient(config.jwks_uri, timeout=config.jwks_timeout)
 
     def verify(self, token: str) -> AuthenticatedSubject:
         if token is None:

@@ -24,6 +24,7 @@ from ._exceptions import (
     GatedhouseInitializationError,
     SchemaNotInitializedError,
     SchemaOutOfDateError,
+    SphinxError,
     TokenVerificationException,
 )
 from ._factory import GatedhouseFactory
@@ -95,6 +96,7 @@ __all__ = [
     "GatedhouseInitializationError",
     "SchemaNotInitializedError",
     "SchemaOutOfDateError",
+    "SphinxError",
     "TokenVerificationException",
     "UnauthorizedException",
 ]
