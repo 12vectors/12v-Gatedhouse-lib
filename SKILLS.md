@@ -417,7 +417,7 @@ Status drives the decision flow:
 
 The host moves between states with `gh.membershipManager().setStatus(identityId, orgId, status)`.
 
-**Memberships are never deleted.** An identity that leaves an org moves to `REMOVED` (`removeMembership`), which revokes its direct roles and group memberships in that org in the same transaction and keeps the row as history. Rejoining (`createMembership`, or `setStatus` to `ACTIVE`/`PENDING`) revives the same row with a clean slate. `REMOVED → SUSPENDED` is rejected. `deleteMembership` is deprecated and now performs a removal. The full lifecycle, and the reasoning behind it, are in [docs/MODEL.md](docs/MODEL.md#the-membership-lifecycle).
+**Memberships are never deleted.** An identity that leaves an org moves to `REMOVED` (`removeMembership`), which revokes its direct roles and group memberships in that org in the same transaction and keeps the row as history. Rejoining (`createMembership`, or `setStatus` to `ACTIVE`/`PENDING`) revives the same row with a clean slate. `REMOVED → SUSPENDED` is rejected. There is no delete operation. The full lifecycle, and the reasoning behind it, are in [docs/MODEL.md](docs/MODEL.md#the-membership-lifecycle).
 
 ### Roles, inheritance, and group assignments
 
@@ -957,7 +957,7 @@ The library invalidates automatically on every write through its API:
 
 | Write | Invalidation |
 |---|---|
-| `membershipManager.createMembership` / `removeMembership` / `setStatus` (and the deprecated `deleteMembership`) | targeted: `(identityId, orgId)` |
+| `membershipManager.createMembership` / `removeMembership` / `setStatus` | targeted: `(identityId, orgId)` |
 | `roleManager.assignToIdentity` / `revokeFromIdentity` | targeted: `(identityId, orgId)` |
 | `groupManager.addIdentityToGroup` / `removeIdentityFromGroup` | targeted: `(identityId, orgId)` |
 | `roleManager.deleteRole` / `grantPermission` / `revokePermission` | wholesale (`invalidateAll`) |

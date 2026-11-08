@@ -36,17 +36,6 @@ public interface MembershipManager {
     void removeMembership(String identityId, String orgId);
 
     /**
-     * Removes the identity from the org.
-     *
-     * @deprecated Memberships are no longer deleted. This now performs
-     *     {@link #removeMembership(String, String)} and keeps the row.
-     */
-    @Deprecated(since = "0.4.0", forRemoval = true)
-    default void deleteMembership(String identityId, String orgId) {
-        removeMembership(identityId, orgId);
-    }
-
-    /**
      * True if the identity is a member of the org in any status other than
      * {@link MembershipStatus#REMOVED REMOVED}.
      */

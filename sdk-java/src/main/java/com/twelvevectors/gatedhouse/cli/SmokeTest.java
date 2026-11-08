@@ -255,7 +255,6 @@ public final class SmokeTest {
 
     // ---- membership lifecycle (docs/MODEL.md) -------------------------------
 
-    @SuppressWarnings("removal")  // exercises the deprecated deleteMembership
     private static void runLifecycleScenarios(Gatedhouse gh, Database database) {
         var members = gh.membershipManager();
         var roles = gh.roleManager();
@@ -321,14 +320,6 @@ public final class SmokeTest {
         members.setStatus(IDENTITY_CAROL, ORG, MembershipStatus.ACTIVE);
         check("activating after revival grants nothing old",
             !gh.hasPermission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE));
-
-        section("Lifecycle: deprecated deleteMembership now removes, keeping the row");
-        roles.assignToIdentity(IDENTITY_CAROL, ORG, ROLE_EDITOR);
-        members.deleteMembership(IDENTITY_CAROL, ORG);
-        check("deleteMembership leaves status REMOVED",
-            members.getStatus(IDENTITY_CAROL, ORG).orElseThrow() == MembershipStatus.REMOVED);
-        check("deleteMembership keeps the row", membershipRows(database, IDENTITY_CAROL) == 1);
-        check("deleteMembership revokes grants", gh.getRoles(IDENTITY_CAROL, ORG).isEmpty());
 
         section("Lifecycle: suspension keeps grants");
         members.createMembership(IDENTITY_DAVE, ORG, EntityType.USER);

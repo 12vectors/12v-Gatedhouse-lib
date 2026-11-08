@@ -257,8 +257,8 @@ The rules:
   removed identity has nothing to pause.
 - **`hasMembership` is false for a `REMOVED` membership**; `getStatus` reports
   `REMOVED`.
-- `deleteMembership` is deprecated. It now performs a removal and no longer
-  deletes the row.
+- **There is no delete operation.** `deleteMembership` was removed from the
+  API; `removeMembership` is the only way to take an identity out of an org.
 
 ### Grants are hard-deleted and audited
 
@@ -354,6 +354,9 @@ for (GrantPath p : e.paths()) {
 - SDKs that share one database should be upgraded together. A release built for
   schema 1 does not know the `removed` status and fails to read a membership in
   that state.
+- **Breaking change:** `deleteMembership` no longer exists. Replace calls with
+  `removeMembership`, which revokes the identity's grants in the org and keeps
+  the membership row instead of deleting it.
 
 ## Decision log
 
