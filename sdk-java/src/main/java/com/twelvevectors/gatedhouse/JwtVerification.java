@@ -9,7 +9,9 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.KeySourceException;
 import com.nimbusds.jose.RemoteKeySourceException;
 import com.nimbusds.jose.jwk.source.JWKSource;
+import com.nimbusds.jose.jwk.source.JWKSetUnavailableException;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
+import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jose.proc.BadJOSEException;
 import com.nimbusds.jose.proc.JWSKeySelector;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
@@ -55,8 +57,12 @@ final class JwtVerification {
         this.expectedIssuer = config.issuer();
         this.expectedAudience = config.audience();
         try {
+            // Nimbus's own defaults are 500 ms; use the configured timeout for
+            // both connecting and each read, keeping Nimbus's size limit.
+            int timeoutMillis = (int) config.jwksTimeout().toMillis();
             JWKSource<SecurityContext> jwkSource = JWKSourceBuilder
-                .create(config.jwksUri().toURL())
+                .create(config.jwksUri().toURL(), new DefaultResourceRetriever(
+                    timeoutMillis, timeoutMillis, JWKSourceBuilder.DEFAULT_HTTP_SIZE_LIMIT))
                 .build();
             JWSKeySelector<SecurityContext> keySelector =
                 new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, jwkSource);
@@ -86,7 +92,10 @@ final class JwtVerification {
             // signature-level failure (BadJWSException, missing-key, etc.).
             throw fail(TokenVerificationException.Reason.INVALID_SIGNATURE,
                 "Signature verification failed: " + e.getMessage(), e);
-        } catch (RemoteKeySourceException e) {
+        } catch (RemoteKeySourceException | JWKSetUnavailableException e) {
+            // JWKSourceBuilder sources report a failed or timed-out fetch as
+            // JWKSetUnavailableException, a sibling of RemoteKeySourceException;
+            // without it, an outage would fall through to UNKNOWN_KEY below.
             throw fail(TokenVerificationException.Reason.JWKS_UNAVAILABLE,
                 "JWKS endpoint unreachable: " + e.getMessage(), e);
         } catch (KeySourceException e) {
