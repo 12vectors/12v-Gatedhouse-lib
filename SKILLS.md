@@ -212,13 +212,14 @@ The three SDKs share **the same architecture, class names, and operation semanti
 | `gh.membershipManager().createMembership(id, org, EntityType.USER)` | `gh.membership_manager().create_membership(id, org, EntityType.USER)` | `gh.membership_manager().create_membership(id, org, EntityType::User)?` |
 | `.setStatus(id, org, MembershipStatus.SUSPENDED)` | `.set_status(id, org, MembershipStatus.SUSPENDED)` | `.set_status(id, org, MembershipStatus::Suspended)?` |
 | `.getStatus(id, org)` → `Optional<MembershipStatus>` | `.get_status(id, org)` → `MembershipStatus \| None` | `.get_status(id, org)?` → `Option<MembershipStatus>` |
-| `.removeMembership(id, org)`: status `REMOVED`, revokes grants in the org | *(port pending)* | *(port pending)* |
+| `.removeMembership(id, org)`: status `REMOVED`, revokes grants in the org | `.remove_membership(id, org)` | `.remove_membership(id, org)?` |
 
 ### Explaining a decision
 
 | Java | Python | Rust |
 |---|---|---|
-| `gh.explainPermission(id, org, svc, res, act)` → `PermissionExplanation` (outcome, membership status, every `GrantPath`) | *(port pending)* | *(port pending)* |
+| `gh.explainPermission(id, org, svc, res, act)` → `PermissionExplanation` (outcome, membership status, every `GrantPath`) | `gh.explain_permission(id, org, svc, res, act)` → `PermissionExplanation` | `gh.explain_permission(id, org, svc, res, act)?` → `PermissionExplanation` |
+| Rejected transition (`REMOVED` → `SUSPENDED`): `IllegalStateException` | `ValueError` | `Err(GatedhouseError::InvalidTransition(_))` |
 
 ### Groups
 

@@ -1,1 +1,2 @@
 V001__init.sql
+V002__membership_removed_status.sql

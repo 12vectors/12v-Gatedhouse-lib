@@ -20,6 +20,7 @@ const ADVISORY_LOCK_KEY: i64 = 0x6761746564686F75; // 'gatedhou'
 
 const MIGRATIONS_INDEX: &str = include_str!("migrations/migrations.txt");
 const V001_SQL: &str = include_str!("migrations/V001__init.sql");
+const V002_SQL: &str = include_str!("migrations/V002__membership_removed_status.sql");
 
 struct Migration {
     version: i32,
@@ -59,6 +60,7 @@ fn available_migrations() -> Result<Vec<Migration>, GatedhouseError> {
         }
         let (version, name, sql) = match line {
             "V001__init.sql" => (1, "init", V001_SQL),
+            "V002__membership_removed_status.sql" => (2, "membership_removed_status", V002_SQL),
             other => {
                 return Err(GatedhouseError::Initialization(format!(
                     "Unknown migration filename in index: {other:?}. \

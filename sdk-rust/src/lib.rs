@@ -51,4 +51,7 @@ pub use permission_catalog::PermissionCatalog;
 pub use role_manager::RoleManager;
 pub use sphinx_client::{SphinxClient, SphinxError, TokenResponse};
 pub use token_verifier::TokenVerifierConfig;
-pub use types::{AuthenticatedSubject, EffectivePermission, PermissionCacheKey};
+pub use types::{
+    AuthenticatedSubject, EffectivePermission, ExplanationOutcome, GrantPath, GrantSource,
+    PermissionCacheKey, PermissionExplanation,
+};

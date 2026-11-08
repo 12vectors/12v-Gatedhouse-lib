@@ -26,6 +26,10 @@ pub enum GatedhouseError {
         current_version: i32,
         expected_version: i32,
     },
+    /// The requested change is not allowed from the current state, e.g.
+    /// suspending a removed membership. The analog of Java's
+    /// `IllegalStateException`.
+    InvalidTransition(String),
 }
 
 impl fmt::Display for GatedhouseError {
@@ -35,6 +39,7 @@ impl fmt::Display for GatedhouseError {
                 write!(f, "Gatedhouse initialization failed: {msg}")
             }
             GatedhouseError::Database(msg) => write!(f, "Gatedhouse database error: {msg}"),
+            GatedhouseError::InvalidTransition(msg) => write!(f, "Invalid transition: {msg}"),
             GatedhouseError::SchemaNotInitialized => write!(
                 f,
                 "Gatedhouse schema is not initialized in the target database.\n\n\

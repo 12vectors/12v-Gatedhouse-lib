@@ -21,7 +21,7 @@ use crate::membership_manager::MembershipManager;
 use crate::permission_catalog::PermissionCatalog;
 use crate::role_manager::RoleManager;
 use crate::token_verifier::TokenVerifierConfig;
-use crate::types::{AuthenticatedSubject, EffectivePermission};
+use crate::types::{AuthenticatedSubject, EffectivePermission, PermissionExplanation};
 
 const UNSUPPORTED: &str = "Database operations not supported on token-verifier-only instance";
 
@@ -70,6 +70,17 @@ impl Gatedhouse for JustTokenVerifierGatedhouse {
         _identity_id: &str,
         _org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
+        panic!("{UNSUPPORTED}")
+    }
+
+    fn explain_permission(
+        &self,
+        _identity_id: &str,
+        _org_id: &str,
+        _service: &str,
+        _resource: &str,
+        _action: &str,
+    ) -> Result<PermissionExplanation, GatedhouseError> {
         panic!("{UNSUPPORTED}")
     }
 

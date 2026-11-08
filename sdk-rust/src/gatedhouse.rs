@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::config::GatedhouseConfig;
 use crate::database::Database;
+use crate::enums::MembershipStatus;
 use crate::error::{GatedhouseError, TokenVerificationError, TokenVerificationReason};
 use crate::group_manager::{DefaultGroupManager, GroupManager};
 use crate::group_source::GroupSource;
@@ -18,7 +19,51 @@ use crate::membership_manager::{DefaultMembershipManager, MembershipManager};
 use crate::permission_cache::PermissionCache;
 use crate::permission_catalog::{DefaultPermissionCatalog, PermissionCatalog};
 use crate::role_manager::{DefaultRoleManager, RoleManager};
-use crate::types::{AuthenticatedSubject, EffectivePermission};
+use crate::types::{
+    AuthenticatedSubject, EffectivePermission, ExplanationOutcome, GrantPath, GrantSource,
+    PermissionExplanation,
+};
+
+// One statement, so the status and the paths come from one snapshot. The path
+// search mirrors LOAD_EFFECTIVE_PERMISSIONS_SQL (same sources, same
+// inheritance climb, same column-wise wildcard rule as has_permission) but
+// carries the role chain, and reports paths whatever the membership status is.
+// $1 = identity, $2 = org, $3/$4/$5 = service/resource/action.
+const EXPLAIN_PERMISSION_SQL: &str =
+    "WITH RECURSIVE sources AS ( \
+         SELECT 'DIRECT' AS source, NULL::TEXT AS group_id, role_key \
+         FROM gatedhouse.role_assignments \
+         WHERE identity_id = $1 AND org_id = $2 \
+         UNION ALL \
+         SELECT 'GROUP', gm.group_id, gr.role_key \
+         FROM gatedhouse.group_memberships gm \
+         JOIN gatedhouse.group_roles gr \
+           ON gr.group_id = gm.group_id AND gr.org_id = gm.org_id \
+         WHERE gm.identity_id = $1 AND gm.org_id = $2 \
+     ), \
+     chains AS ( \
+         SELECT source, group_id, role_key AS at_role, ARRAY[role_key] AS chain \
+         FROM sources \
+         UNION ALL \
+         SELECT c.source, c.group_id, ri.parent_key, c.chain || ri.parent_key \
+         FROM chains c \
+         JOIN gatedhouse.role_inherits ri ON ri.child_key = c.at_role \
+         WHERE NOT (ri.parent_key = ANY (c.chain)) \
+     ), \
+     paths AS ( \
+         SELECT c.source, c.group_id, c.chain, rp.service, rp.resource, rp.action \
+         FROM chains c \
+         JOIN gatedhouse.role_permissions rp ON rp.role_key = c.at_role \
+         WHERE (rp.service  IS NULL OR rp.service  = $3) \
+           AND (rp.resource IS NULL OR rp.resource = $4) \
+           AND (rp.action   IS NULL OR rp.action   = $5) \
+     ) \
+     SELECT (SELECT status::TEXT FROM gatedhouse.memberships \
+             WHERE identity_id = $1 AND org_id = $2) AS status, \
+            p.source, p.group_id, p.chain, p.service, p.resource, p.action \
+     FROM (SELECT 1) AS one \
+     LEFT JOIN paths p ON TRUE \
+     ORDER BY p.source, p.group_id NULLS FIRST, cardinality(p.chain), p.chain";
 
 const LOAD_EFFECTIVE_PERMISSIONS_SQL: &str =
     "WITH RECURSIVE active_membership AS ( \
@@ -72,6 +117,23 @@ pub trait Gatedhouse: Send + Sync {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError>;
+
+    /// Explains the decision [`has_permission`](Self::has_permission) makes
+    /// for the same inputs: the identity's membership status, and every path
+    /// through which it holds the permission (direct or via a group, through
+    /// role inheritance, to the matching grant). Paths are reported even when
+    /// the decision is a denial.
+    ///
+    /// A diagnostic, not a hot-path check: it bypasses the permission cache
+    /// and always reads the database.
+    fn explain_permission(
+        &self,
+        identity_id: &str,
+        org_id: &str,
+        service: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<PermissionExplanation, GatedhouseError>;
 
     fn get_roles(&self, identity_id: &str, org_id: &str) -> Result<Vec<String>, GatedhouseError>;
     fn get_groups(&self, identity_id: &str, org_id: &str) -> Result<Vec<String>, GatedhouseError>;
@@ -244,6 +306,61 @@ impl Gatedhouse for DefaultGatedhouse {
         org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
         self.effective_permissions_cached(identity_id, org_id)
+    }
+
+    fn explain_permission(
+        &self,
+        identity_id: &str,
+        org_id: &str,
+        service: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<PermissionExplanation, GatedhouseError> {
+        let mut conn = self.database.connection()?;
+        let rows = conn.query(
+            EXPLAIN_PERMISSION_SQL,
+            &[&identity_id, &org_id, &service, &resource, &action],
+        )?;
+        let mut membership_status = None;
+        let mut paths = Vec::new();
+        for r in rows {
+            if let Some(value) = r.get::<_, Option<String>>("status") {
+                membership_status = Some(
+                    MembershipStatus::from_db_value(&value)
+                        .map_err(|e| GatedhouseError::Database(e.to_string()))?,
+                );
+            }
+            // The LEFT JOIN's placeholder row (no paths) has a NULL source.
+            let Some(source) = r.get::<_, Option<String>>("source") else {
+                continue;
+            };
+            let source = match source.as_str() {
+                "DIRECT" => GrantSource::Direct,
+                "GROUP" => GrantSource::Group,
+                other => {
+                    return Err(GatedhouseError::Database(format!(
+                        "unexpected grant source in explain query: {other:?}"
+                    )))
+                }
+            };
+            paths.push(GrantPath {
+                source,
+                group_id: r.get("group_id"),
+                role_chain: r.get("chain"),
+                grant: EffectivePermission::new(r.get("service"), r.get("resource"), r.get("action")),
+            });
+        }
+        let outcome = match membership_status {
+            None => ExplanationOutcome::NoMembership,
+            Some(MembershipStatus::Active) if paths.is_empty() => ExplanationOutcome::NoMatchingGrant,
+            Some(MembershipStatus::Active) => ExplanationOutcome::Allowed,
+            Some(_) => ExplanationOutcome::MembershipNotActive,
+        };
+        Ok(PermissionExplanation {
+            outcome,
+            membership_status,
+            paths,
+        })
     }
 
     fn get_roles(&self, identity_id: &str, org_id: &str) -> Result<Vec<String>, GatedhouseError> {

@@ -16,8 +16,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use gatedhouse::{
-    ConninfoDatabase, Database, EntityType, Gatedhouse, GatedhouseConfig, GatedhouseFactory,
-    InMemoryPermissionCache, MembershipStatus,
+    ConninfoDatabase, Database, EffectivePermission, EntityType, ExplanationOutcome, Gatedhouse,
+    GatedhouseConfig, GatedhouseError, GatedhouseFactory, GrantSource, InMemoryPermissionCache,
+    MembershipStatus,
 };
 
 // ---- fixtures ------------------------------------------------------------
@@ -40,6 +41,10 @@ const ORG: &str = "smoketestorg";
 const IDENTITY_ALICE: &str = "smoketestalice";
 const IDENTITY_BOB: &str = "smoketestbob";
 const GROUP_ENG: &str = "smoketestgroup";
+const IDENTITY_CAROL: &str = "smoketestcarol";
+const IDENTITY_DAVE: &str = "smoketestdave";
+const IDENTITY_ERIN: &str = "smoketesterin";
+const IDENTITY_GHOST: &str = "smoketestghost";
 
 static PASSED: AtomicU32 = AtomicU32::new(0);
 static FAILED: AtomicU32 = AtomicU32::new(0);
@@ -91,6 +96,8 @@ fn main() -> ExitCode {
         setup_catalog(gh.as_ref());
         setup_roles_and_memberships(gh.as_ref());
         run_scenarios(gh.as_ref());
+        run_lifecycle_scenarios(gh.as_ref(), database.as_ref());
+        run_explain_scenarios(gh.as_ref());
         run_cache_scenarios(gh.as_ref(), &cache);
         run_ttl_scenario(database.clone());
     }));
@@ -335,6 +342,258 @@ fn run_scenarios(gh: &dyn Gatedhouse) {
         gh.get_effective_permissions("noSuchIdentity", ORG).unwrap().is_empty(),
     );
 }
+
+// ---- membership lifecycle (docs/MODEL.md) --------------------------------
+
+fn can(gh: &dyn Gatedhouse, identity: &str, resource: &str, action: &str) -> bool {
+    gh.has_permission(identity, ORG, SVC, resource, action).unwrap()
+}
+
+fn run_lifecycle_scenarios(gh: &dyn Gatedhouse, database: &dyn Database) {
+    let members = gh.membership_manager();
+    let roles = gh.role_manager();
+
+    section("Lifecycle: removal revokes grants and keeps the row");
+    members.create_membership(IDENTITY_CAROL, ORG, EntityType::User).unwrap();
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR).unwrap();
+    gh.group_manager().add_identity_to_group(GROUP_ENG, ORG, IDENTITY_CAROL).unwrap();
+    check("carol can write (direct editor) before removal", can(gh, IDENTITY_CAROL, RES_PROJ, ACT_WRITE));
+    check("carol can deploy (group deployer) before removal", can(gh, IDENTITY_CAROL, RES_PROJ, ACT_DEPLOY));
+    let role_deletes_before = audit_deletes(database, "role_assignments", IDENTITY_CAROL);
+    let group_deletes_before = audit_deletes(database, "group_memberships", IDENTITY_CAROL);
+    members.remove_membership(IDENTITY_CAROL, ORG).unwrap();
+    check(
+        "status is Removed",
+        members.get_status(IDENTITY_CAROL, ORG).unwrap() == Some(MembershipStatus::Removed),
+    );
+    check(
+        "has_membership is false for a removed membership",
+        !members.has_membership(IDENTITY_CAROL, ORG).unwrap(),
+    );
+    check("membership row is kept", membership_rows(database, IDENTITY_CAROL) == 1);
+    check("carol can no longer write", !can(gh, IDENTITY_CAROL, RES_PROJ, ACT_WRITE));
+    check("carol can no longer deploy", !can(gh, IDENTITY_CAROL, RES_PROJ, ACT_DEPLOY));
+    check("direct roles revoked", gh.get_roles(IDENTITY_CAROL, ORG).unwrap().is_empty());
+    check("group memberships revoked", gh.get_groups(IDENTITY_CAROL, ORG).unwrap().is_empty());
+    check(
+        "audit log records the role-assignment delete",
+        audit_deletes(database, "role_assignments", IDENTITY_CAROL) == role_deletes_before + 1,
+    );
+    check(
+        "audit log records the group-membership delete",
+        audit_deletes(database, "group_memberships", IDENTITY_CAROL) == group_deletes_before + 1,
+    );
+
+    section("Lifecycle: Removed -> Suspended is rejected");
+    let result = members.set_status(IDENTITY_CAROL, ORG, MembershipStatus::Suspended);
+    check(
+        "set_status(Suspended) on a removed membership returns InvalidTransition",
+        matches!(result, Err(GatedhouseError::InvalidTransition(_))),
+    );
+    check(
+        "status is still Removed after the rejected transition",
+        members.get_status(IDENTITY_CAROL, ORG).unwrap() == Some(MembershipStatus::Removed),
+    );
+
+    section("Lifecycle: a grant made after removal is inert, then cleared on rejoin");
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR).unwrap();
+    check("late grant does not apply while removed", !can(gh, IDENTITY_CAROL, RES_PROJ, ACT_WRITE));
+    members.create_membership(IDENTITY_CAROL, ORG, EntityType::User).unwrap();
+    check(
+        "create_membership revives the removed membership as Active",
+        members.get_status(IDENTITY_CAROL, ORG).unwrap() == Some(MembershipStatus::Active),
+    );
+    check("revival reuses the same row", membership_rows(database, IDENTITY_CAROL) == 1);
+    check(
+        "rejoin starts from a clean slate (late grant cleared)",
+        gh.get_roles(IDENTITY_CAROL, ORG).unwrap().is_empty(),
+    );
+    check("rejoined carol cannot write", !can(gh, IDENTITY_CAROL, RES_PROJ, ACT_WRITE));
+
+    section("Lifecycle: set_status(Pending) also revives with a clean slate");
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR).unwrap();
+    members.remove_membership(IDENTITY_CAROL, ORG).unwrap();
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR).unwrap(); // late grant again
+    members.set_status(IDENTITY_CAROL, ORG, MembershipStatus::Pending).unwrap();
+    check(
+        "status is Pending",
+        members.get_status(IDENTITY_CAROL, ORG).unwrap() == Some(MembershipStatus::Pending),
+    );
+    check(
+        "grants cleared on revival via set_status",
+        gh.get_roles(IDENTITY_CAROL, ORG).unwrap().is_empty(),
+    );
+    members.set_status(IDENTITY_CAROL, ORG, MembershipStatus::Active).unwrap();
+    check("activating after revival grants nothing old", !can(gh, IDENTITY_CAROL, RES_PROJ, ACT_WRITE));
+
+    section("Lifecycle: suspension keeps grants");
+    members.create_membership(IDENTITY_DAVE, ORG, EntityType::User).unwrap();
+    roles.assign_to_identity(IDENTITY_DAVE, ORG, ROLE_VIEWER).unwrap();
+    members.set_status(IDENTITY_DAVE, ORG, MembershipStatus::Suspended).unwrap();
+    check("suspended dave cannot read", !can(gh, IDENTITY_DAVE, RES_PROJ, ACT_READ));
+    check(
+        "suspended dave keeps his role",
+        gh.get_roles(IDENTITY_DAVE, ORG).unwrap().iter().any(|r| r == ROLE_VIEWER),
+    );
+    members.set_status(IDENTITY_DAVE, ORG, MembershipStatus::Active).unwrap();
+    check("reactivated dave can read again", can(gh, IDENTITY_DAVE, RES_PROJ, ACT_READ));
+
+    section("Lifecycle: create_membership on a live membership still fails");
+    let duplicate = members.create_membership(IDENTITY_DAVE, ORG, EntityType::User);
+    // Rust's Database error carries only "db error" (the SQLSTATE is not
+    // preserved; see issue #8), so this checks the failure, not its cause.
+    check(
+        "duplicate create_membership still fails with a Database error, as before",
+        matches!(duplicate, Err(GatedhouseError::Database(_))),
+    );
+
+    section("Lifecycle: remove_membership with no membership clears stray grants");
+    roles.assign_to_identity(IDENTITY_GHOST, ORG, ROLE_VIEWER).unwrap();
+    check(
+        "stray grant exists without a membership",
+        gh.get_roles(IDENTITY_GHOST, ORG).unwrap().iter().any(|r| r == ROLE_VIEWER),
+    );
+    members.remove_membership(IDENTITY_GHOST, ORG).unwrap();
+    check("stray grant cleared", gh.get_roles(IDENTITY_GHOST, ORG).unwrap().is_empty());
+    check("no membership row created", members.get_status(IDENTITY_GHOST, ORG).unwrap().is_none());
+}
+
+// ---- explain (docs/MODEL.md, "Explaining a decision") --------------------
+
+fn perm(service: &str, resource: Option<&str>, action: &str) -> EffectivePermission {
+    EffectivePermission::new(Some(service.into()), resource.map(Into::into), Some(action.into()))
+}
+
+fn run_explain_scenarios(gh: &dyn Gatedhouse) {
+    let members = gh.membership_manager();
+    let roles = gh.role_manager();
+    members.create_membership(IDENTITY_ERIN, ORG, EntityType::User).unwrap();
+    roles.assign_to_identity(IDENTITY_ERIN, ORG, ROLE_EDITOR).unwrap(); // editor -> viewer -> (projects, read)
+    roles.assign_to_identity(IDENTITY_ERIN, ORG, ROLE_READER).unwrap(); // (svc, *, read)
+    gh.group_manager().add_identity_to_group(GROUP_ENG, ORG, IDENTITY_ERIN).unwrap(); // group -> deployer
+
+    section("Explain: every path, through inheritance and wildcards");
+    let read = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
+    check("read is Allowed", read.outcome == ExplanationOutcome::Allowed && read.allowed());
+    check(
+        "membership status reported as Active",
+        read.membership_status == Some(MembershipStatus::Active),
+    );
+    check("two paths grant read", read.paths.len() == 2);
+    check(
+        "inherited path: Direct [editor, viewer] -> (svc, projects, read)",
+        read.paths.iter().any(|p| {
+            p.source == GrantSource::Direct
+                && p.role_chain == [ROLE_EDITOR, ROLE_VIEWER]
+                && p.assigned_role() == ROLE_EDITOR
+                && p.granting_role() == ROLE_VIEWER
+                && p.grant == perm(SVC, Some(RES_PROJ), ACT_READ)
+        }),
+    );
+    check(
+        "wildcard path: Direct [reader] -> (svc, *, read)",
+        read.paths.iter().any(|p| {
+            p.source == GrantSource::Direct
+                && p.role_chain == [ROLE_READER]
+                && p.grant == perm(SVC, None, ACT_READ)
+        }),
+    );
+
+    let deploy = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DEPLOY).unwrap();
+    check("deploy is Allowed via one path", deploy.allowed() && deploy.paths.len() == 1);
+    let via_group = &deploy.paths[0];
+    check(
+        "group path names its source and group",
+        via_group.source == GrantSource::Group
+            && via_group.group_id.as_deref() == Some(GROUP_ENG)
+            && via_group.role_chain == [ROLE_DEPLOYER],
+    );
+
+    section("Explain: denials say why");
+    let delete = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DELETE).unwrap();
+    check(
+        "delete is NoMatchingGrant with no paths",
+        delete.outcome == ExplanationOutcome::NoMatchingGrant && delete.paths.is_empty() && !delete.allowed(),
+    );
+
+    members.set_status(IDENTITY_ERIN, ORG, MembershipStatus::Suspended).unwrap();
+    let suspended = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
+    check(
+        "suspended read is MembershipNotActive",
+        suspended.outcome == ExplanationOutcome::MembershipNotActive,
+    );
+    check("suspended explanation still shows what reactivation restores", suspended.paths.len() == 2);
+    check(
+        "explain and has_permission agree for the suspended member",
+        suspended.allowed() == can(gh, IDENTITY_ERIN, RES_PROJ, ACT_READ),
+    );
+    members.set_status(IDENTITY_ERIN, ORG, MembershipStatus::Active).unwrap();
+
+    let unknown = gh.explain_permission("noSuchIdentity", ORG, SVC, RES_PROJ, ACT_READ).unwrap();
+    check(
+        "unknown identity is NoMembership with no status and no paths",
+        unknown.outcome == ExplanationOutcome::NoMembership
+            && unknown.membership_status.is_none()
+            && unknown.paths.is_empty(),
+    );
+
+    roles.assign_to_identity(IDENTITY_GHOST, ORG, ROLE_VIEWER).unwrap(); // stray grant, no membership
+    let stray = gh.explain_permission(IDENTITY_GHOST, ORG, SVC, RES_PROJ, ACT_READ).unwrap();
+    check(
+        "stray grant is surfaced: NoMembership with one path",
+        stray.outcome == ExplanationOutcome::NoMembership && stray.paths.len() == 1,
+    );
+
+    section("Explain: agrees with has_permission everywhere");
+    let identities = [
+        IDENTITY_ALICE, IDENTITY_BOB, IDENTITY_CAROL, IDENTITY_DAVE,
+        IDENTITY_ERIN, IDENTITY_GHOST, "noSuchIdentity",
+    ];
+    let permissions = [
+        (RES_PROJ, ACT_READ), (RES_PROJ, ACT_WRITE), (RES_PROJ, ACT_DELETE),
+        (RES_PROJ, ACT_DEPLOY), (RES_DOC, ACT_READ),
+    ];
+    let mut disagreements = 0;
+    for identity in identities {
+        for (resource, action) in permissions {
+            if gh.explain_permission(identity, ORG, SVC, resource, action).unwrap().allowed()
+                != can(gh, identity, resource, action)
+            {
+                disagreements += 1;
+            }
+        }
+    }
+    check(
+        "explain_permission().allowed() == has_permission() for 35 identity/permission pairs",
+        disagreements == 0,
+    );
+}
+
+fn audit_deletes(database: &dyn Database, table: &str, identity_id: &str) -> i64 {
+    count(
+        database,
+        &format!(
+            "SELECT count(*) FROM gatedhouse.audit_log \
+             WHERE table_name = 'gatedhouse.{table}' AND op = 'DELETE' \
+             AND old_row->>'identity_id' = $1"
+        ),
+        identity_id,
+    )
+}
+
+fn membership_rows(database: &dyn Database, identity_id: &str) -> i64 {
+    count(
+        database,
+        &format!("SELECT count(*) FROM gatedhouse.memberships WHERE identity_id = $1 AND org_id = '{ORG}'"),
+        identity_id,
+    )
+}
+
+fn count(database: &dyn Database, sql: &str, param: &str) -> i64 {
+    let mut conn = database.connection().expect("smoke test connection");
+    conn.query_one(sql, &[&param]).expect("smoke test query").get(0)
+}
+
 
 // ---- cache scenarios -----------------------------------------------------
 

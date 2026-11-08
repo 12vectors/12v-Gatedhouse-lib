@@ -7,7 +7,7 @@
 use crate::database::Database;
 use crate::error::GatedhouseError;
 
-pub(crate) const EXPECTED_VERSION: i32 = 1;
+pub(crate) const EXPECTED_VERSION: i32 = 2;
 
 pub(crate) fn verify(database: &dyn Database) -> Result<(), GatedhouseError> {
     let mut conn = database.connection()?;

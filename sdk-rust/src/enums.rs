@@ -34,11 +34,19 @@ impl EntityType {
 }
 
 /// Mirrors the `gatedhouse.membership_status` Postgres enum.
+///
+/// Only [`MembershipStatus::Active`] lets the identity's grants in the org
+/// count. See docs/MODEL.md, "The membership lifecycle".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MembershipStatus {
+    /// A member in good standing: grants apply.
     Active,
+    /// Temporarily barred: grants are kept but ignored until reactivated.
     Suspended,
+    /// Invited or being provisioned: grants may be prepared but are ignored.
     Pending,
+    /// Has left the org: grants were revoked; the row remains as history.
+    Removed,
 }
 
 impl MembershipStatus {
@@ -47,6 +55,7 @@ impl MembershipStatus {
             MembershipStatus::Active => "active",
             MembershipStatus::Suspended => "suspended",
             MembershipStatus::Pending => "pending",
+            MembershipStatus::Removed => "removed",
         }
     }
 
@@ -55,6 +64,7 @@ impl MembershipStatus {
             "active" => Ok(MembershipStatus::Active),
             "suspended" => Ok(MembershipStatus::Suspended),
             "pending" => Ok(MembershipStatus::Pending),
+            "removed" => Ok(MembershipStatus::Removed),
             other => Err(UnknownEnumValue {
                 kind: "membership_status",
                 value: other.to_string(),

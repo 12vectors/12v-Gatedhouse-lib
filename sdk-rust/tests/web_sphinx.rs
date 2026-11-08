@@ -70,6 +70,16 @@ impl Gatedhouse for StubGh {
     ) -> Result<Vec<EffectivePermission>, gatedhouse::GatedhouseError> {
         unimplemented!()
     }
+    fn explain_permission(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<gatedhouse::PermissionExplanation, gatedhouse::GatedhouseError> {
+        unimplemented!()
+    }
     fn get_roles(&self, _: &str, _: &str) -> Result<Vec<String>, gatedhouse::GatedhouseError> {
         unimplemented!()
     }
