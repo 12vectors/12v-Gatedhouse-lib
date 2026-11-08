@@ -37,7 +37,15 @@ from ._permission_catalog import PermissionCatalog
 from ._role_manager import RoleManager
 from ._sphinx_client import SphinxClient, TokenResponse
 from ._token_verifier_config import TokenVerifierConfig
-from ._types import AuthenticatedSubject, EffectivePermission, PermissionCacheKey
+from ._types import (
+    AuthenticatedSubject,
+    EffectivePermission,
+    ExplanationOutcome,
+    GrantPath,
+    GrantSource,
+    PermissionCacheKey,
+    PermissionExplanation,
+)
 from ._web import (
     WWW_AUTHENTICATE_CHALLENGE,
     ForbiddenException,
@@ -74,8 +82,12 @@ __all__ = [
     "AuthenticatedSubject",
     "EffectivePermission",
     "EntityType",
+    "ExplanationOutcome",
+    "GrantPath",
+    "GrantSource",
     "MembershipStatus",
     "PermissionCacheKey",
+    "PermissionExplanation",
     # Exceptions
     "ForbiddenException",
     "GatedhouseDatabaseError",

@@ -11,7 +11,7 @@ from psycopg import errors as pg_errors
 from ._database import Database
 from ._exceptions import SchemaNotInitializedError, SchemaOutOfDateError
 
-EXPECTED_VERSION = 1
+EXPECTED_VERSION = 2
 
 
 def verify(database: Database) -> None:

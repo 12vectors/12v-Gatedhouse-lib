@@ -21,7 +21,15 @@ from ._membership_manager import DefaultMembershipManager, MembershipManager
 from ._permission_cache import PermissionCache
 from ._permission_catalog import DefaultPermissionCatalog, PermissionCatalog
 from ._role_manager import DefaultRoleManager, RoleManager
-from ._types import AuthenticatedSubject, EffectivePermission
+from ._enums import MembershipStatus
+from ._types import (
+    AuthenticatedSubject,
+    EffectivePermission,
+    ExplanationOutcome,
+    GrantPath,
+    GrantSource,
+    PermissionExplanation,
+)
 
 
 _LOAD_EFFECTIVE_PERMISSIONS_SQL = (
@@ -50,6 +58,47 @@ _LOAD_EFFECTIVE_PERMISSIONS_SQL = (
     "FROM gatedhouse.role_permissions rp "
     "WHERE rp.role_key IN (SELECT role_key FROM all_roles) "
     "  AND EXISTS (SELECT 1 FROM active_membership)"
+)
+
+# One statement, so the status and the paths come from one snapshot. The path
+# search mirrors _LOAD_EFFECTIVE_PERMISSIONS_SQL (same sources, same
+# inheritance climb, same column-wise wildcard rule as has_permission) but
+# carries the role chain, and reports paths whatever the membership status is.
+_EXPLAIN_PERMISSION_SQL = (
+    "WITH RECURSIVE sources AS ( "
+    "    SELECT 'DIRECT' AS source, NULL::TEXT AS group_id, role_key "
+    "    FROM gatedhouse.role_assignments "
+    "    WHERE identity_id = %(identity)s AND org_id = %(org)s "
+    "    UNION ALL "
+    "    SELECT 'GROUP', gm.group_id, gr.role_key "
+    "    FROM gatedhouse.group_memberships gm "
+    "    JOIN gatedhouse.group_roles gr "
+    "      ON gr.group_id = gm.group_id AND gr.org_id = gm.org_id "
+    "    WHERE gm.identity_id = %(identity)s AND gm.org_id = %(org)s "
+    "), "
+    "chains AS ( "
+    "    SELECT source, group_id, role_key AS at_role, ARRAY[role_key] AS chain "
+    "    FROM sources "
+    "    UNION ALL "
+    "    SELECT c.source, c.group_id, ri.parent_key, c.chain || ri.parent_key "
+    "    FROM chains c "
+    "    JOIN gatedhouse.role_inherits ri ON ri.child_key = c.at_role "
+    "    WHERE NOT (ri.parent_key = ANY (c.chain)) "
+    "), "
+    "paths AS ( "
+    "    SELECT c.source, c.group_id, c.chain, rp.service, rp.resource, rp.action "
+    "    FROM chains c "
+    "    JOIN gatedhouse.role_permissions rp ON rp.role_key = c.at_role "
+    "    WHERE (rp.service  IS NULL OR rp.service  = %(service)s) "
+    "      AND (rp.resource IS NULL OR rp.resource = %(resource)s) "
+    "      AND (rp.action   IS NULL OR rp.action   = %(action)s) "
+    ") "
+    "SELECT (SELECT status::TEXT FROM gatedhouse.memberships "
+    "        WHERE identity_id = %(identity)s AND org_id = %(org)s) AS status, "
+    "       p.source, p.group_id, p.chain, p.service, p.resource, p.action "
+    "FROM (SELECT 1) AS one "
+    "LEFT JOIN paths p ON TRUE "
+    "ORDER BY p.source, p.group_id NULLS FIRST, cardinality(p.chain), p.chain"
 )
 
 
@@ -82,6 +131,20 @@ class Gatedhouse(ABC):
     @abstractmethod
     def get_effective_permissions(self, identity_id: str,
                                   org_id: str) -> list[EffectivePermission]: ...
+
+    @abstractmethod
+    def explain_permission(self, identity_id: str, org_id: str,
+                           service: str, resource: str,
+                           action: str) -> PermissionExplanation:
+        """Explain the decision :meth:`has_permission` makes for the same
+        inputs: the identity's membership status, and every path through
+        which it holds the permission (direct or via a group, through role
+        inheritance, to the matching grant). Paths are reported even when
+        the decision is a denial.
+
+        A diagnostic, not a hot-path check: it bypasses the permission cache
+        and always reads the database.
+        """
 
     @abstractmethod
     def get_roles(self, identity_id: str, org_id: str) -> list[str]: ...
@@ -180,6 +243,40 @@ class DefaultGatedhouse(Gatedhouse):
     def get_effective_permissions(self, identity_id: str,
                                   org_id: str) -> list[EffectivePermission]:
         return list(self._effective_permissions_cached(identity_id, org_id))
+
+    def explain_permission(self, identity_id: str, org_id: str,
+                           service: str, resource: str,
+                           action: str) -> PermissionExplanation:
+        params = {"identity": identity_id, "org": org_id,
+                  "service": service, "resource": resource, "action": action}
+        try:
+            with self._config.database.connection() as conn, conn.cursor() as cur:
+                cur.execute(_EXPLAIN_PERMISSION_SQL, params)
+                rows = cur.fetchall()
+        except pg_errors.Error as e:
+            raise GatedhouseDatabaseError(f"explain_permission failed: {e}") from e
+
+        status_value = rows[0][0]  # the LEFT JOIN always yields a row
+        status = None if status_value is None else MembershipStatus.from_db_value(status_value)
+        paths = tuple(
+            GrantPath(
+                source=GrantSource(source),
+                group_id=group_id,
+                role_chain=tuple(chain),
+                grant=EffectivePermission(svc, res, act),
+            )
+            for (_, source, group_id, chain, svc, res, act) in rows
+            if source is not None  # skip the placeholder row: no paths
+        )
+        if status is None:
+            outcome = ExplanationOutcome.NO_MEMBERSHIP
+        elif status is not MembershipStatus.ACTIVE:
+            outcome = ExplanationOutcome.MEMBERSHIP_NOT_ACTIVE
+        elif not paths:
+            outcome = ExplanationOutcome.NO_MATCHING_GRANT
+        else:
+            outcome = ExplanationOutcome.ALLOWED
+        return PermissionExplanation(outcome, status, paths)
 
     def get_roles(self, identity_id: str, org_id: str) -> list[str]:
         return self._role_manager.get_identity_roles(identity_id, org_id)

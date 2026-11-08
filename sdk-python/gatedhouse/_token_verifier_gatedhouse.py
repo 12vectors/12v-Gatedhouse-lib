@@ -17,7 +17,7 @@ from ._membership_manager import MembershipManager
 from ._permission_catalog import PermissionCatalog
 from ._role_manager import RoleManager
 from ._token_verifier_config import TokenVerifierConfig
-from ._types import AuthenticatedSubject, EffectivePermission
+from ._types import AuthenticatedSubject, EffectivePermission, PermissionExplanation
 
 _UNSUPPORTED = "Database operations not supported on token-verifier-only instance"
 
@@ -51,6 +51,11 @@ class JustTokenVerifierGatedhouse(Gatedhouse):
 
     def get_effective_permissions(self, identity_id: str,
                                   org_id: str) -> list[EffectivePermission]:
+        raise NotImplementedError(_UNSUPPORTED)
+
+    def explain_permission(self, identity_id: str, org_id: str,
+                           service: str, resource: str,
+                           action: str) -> PermissionExplanation:
         raise NotImplementedError(_UNSUPPORTED)
 
     def get_roles(self, identity_id: str, org_id: str) -> list[str]:

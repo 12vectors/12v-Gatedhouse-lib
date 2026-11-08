@@ -17,12 +17,18 @@ import sys
 import time
 from datetime import timedelta
 
+from psycopg import errors as pg_errors
+
 from gatedhouse import (
     Database,
+    EffectivePermission,
     EntityType,
+    ExplanationOutcome,
     Gatedhouse,
     GatedhouseConfig,
+    GatedhouseDatabaseError,
     GatedhouseFactory,
+    GrantSource,
     InMemoryPermissionCache,
     MembershipStatus,
 )
@@ -48,6 +54,10 @@ ORG = "smoketestorg"
 IDENTITY_ALICE = "smoketestalice"
 IDENTITY_BOB = "smoketestbob"
 GROUP_ENG = "smoketestgroup"
+IDENTITY_CAROL = "smoketestcarol"
+IDENTITY_DAVE = "smoketestdave"
+IDENTITY_ERIN = "smoketesterin"
+IDENTITY_GHOST = "smoketestghost"
 
 
 _passed = 0
@@ -215,6 +225,208 @@ def _run_scenarios(gh: Gatedhouse) -> None:
            not gh.has_permission("noSuchIdentity", ORG, SVC, RES_PROJ, ACT_READ))
     _check("unknown identity has empty effective perms",
            gh.get_effective_permissions("noSuchIdentity", ORG) == [])
+
+
+# ---- membership lifecycle (docs/MODEL.md) ---------------------------------
+
+
+def _run_lifecycle_scenarios(gh: Gatedhouse, database: _Db) -> None:
+    members = gh.membership_manager()
+    roles = gh.role_manager()
+
+    _section("Lifecycle: removal revokes grants and keeps the row")
+    members.create_membership(IDENTITY_CAROL, ORG, EntityType.USER)
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR)
+    gh.group_manager().add_identity_to_group(GROUP_ENG, ORG, IDENTITY_CAROL)
+    _check("carol can write (direct editor) before removal",
+           gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE))
+    _check("carol can deploy (group deployer) before removal",
+           gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_DEPLOY))
+    role_deletes_before = _audit_deletes(database, "role_assignments", IDENTITY_CAROL)
+    group_deletes_before = _audit_deletes(database, "group_memberships", IDENTITY_CAROL)
+    members.remove_membership(IDENTITY_CAROL, ORG)
+    _check("status is REMOVED",
+           members.get_status(IDENTITY_CAROL, ORG) is MembershipStatus.REMOVED)
+    _check("has_membership is false for a removed membership",
+           not members.has_membership(IDENTITY_CAROL, ORG))
+    _check("membership row is kept", _membership_rows(database, IDENTITY_CAROL) == 1)
+    _check("carol can no longer write",
+           not gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE))
+    _check("carol can no longer deploy",
+           not gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_DEPLOY))
+    _check("direct roles revoked", gh.get_roles(IDENTITY_CAROL, ORG) == [])
+    _check("group memberships revoked", gh.get_groups(IDENTITY_CAROL, ORG) == [])
+    _check("audit log records the role-assignment delete",
+           _audit_deletes(database, "role_assignments", IDENTITY_CAROL) == role_deletes_before + 1)
+    _check("audit log records the group-membership delete",
+           _audit_deletes(database, "group_memberships", IDENTITY_CAROL) == group_deletes_before + 1)
+
+    _section("Lifecycle: REMOVED -> SUSPENDED is rejected")
+    rejected = False
+    try:
+        members.set_status(IDENTITY_CAROL, ORG, MembershipStatus.SUSPENDED)
+    except ValueError:
+        rejected = True
+    _check("set_status(SUSPENDED) on a removed membership raises ValueError", rejected)
+    _check("status is still REMOVED after the rejected transition",
+           members.get_status(IDENTITY_CAROL, ORG) is MembershipStatus.REMOVED)
+
+    _section("Lifecycle: a grant made after removal is inert, then cleared on rejoin")
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR)
+    _check("late grant does not apply while removed",
+           not gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE))
+    members.create_membership(IDENTITY_CAROL, ORG, EntityType.USER)
+    _check("create_membership revives the removed membership as ACTIVE",
+           members.get_status(IDENTITY_CAROL, ORG) is MembershipStatus.ACTIVE)
+    _check("revival reuses the same row", _membership_rows(database, IDENTITY_CAROL) == 1)
+    _check("rejoin starts from a clean slate (late grant cleared)",
+           gh.get_roles(IDENTITY_CAROL, ORG) == [])
+    _check("rejoined carol cannot write",
+           not gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE))
+
+    _section("Lifecycle: set_status(PENDING) also revives with a clean slate")
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR)
+    members.remove_membership(IDENTITY_CAROL, ORG)
+    roles.assign_to_identity(IDENTITY_CAROL, ORG, ROLE_EDITOR)  # late grant again
+    members.set_status(IDENTITY_CAROL, ORG, MembershipStatus.PENDING)
+    _check("status is PENDING",
+           members.get_status(IDENTITY_CAROL, ORG) is MembershipStatus.PENDING)
+    _check("grants cleared on revival via set_status", gh.get_roles(IDENTITY_CAROL, ORG) == [])
+    members.set_status(IDENTITY_CAROL, ORG, MembershipStatus.ACTIVE)
+    _check("activating after revival grants nothing old",
+           not gh.has_permission(IDENTITY_CAROL, ORG, SVC, RES_PROJ, ACT_WRITE))
+
+    _section("Lifecycle: suspension keeps grants")
+    members.create_membership(IDENTITY_DAVE, ORG, EntityType.USER)
+    roles.assign_to_identity(IDENTITY_DAVE, ORG, ROLE_VIEWER)
+    members.set_status(IDENTITY_DAVE, ORG, MembershipStatus.SUSPENDED)
+    _check("suspended dave cannot read",
+           not gh.has_permission(IDENTITY_DAVE, ORG, SVC, RES_PROJ, ACT_READ))
+    _check("suspended dave keeps his role", ROLE_VIEWER in gh.get_roles(IDENTITY_DAVE, ORG))
+    members.set_status(IDENTITY_DAVE, ORG, MembershipStatus.ACTIVE)
+    _check("reactivated dave can read again",
+           gh.has_permission(IDENTITY_DAVE, ORG, SVC, RES_PROJ, ACT_READ))
+
+    _section("Lifecycle: create_membership on a live membership still fails")
+    duplicate_rejected = False
+    try:
+        members.create_membership(IDENTITY_DAVE, ORG, EntityType.USER)
+    except GatedhouseDatabaseError as e:
+        duplicate_rejected = isinstance(e.__cause__, pg_errors.UniqueViolation)
+    _check("duplicate create_membership raises the unique violation as before (as __cause__)",
+           duplicate_rejected)
+
+    _section("Lifecycle: remove_membership with no membership clears stray grants")
+    roles.assign_to_identity(IDENTITY_GHOST, ORG, ROLE_VIEWER)
+    _check("stray grant exists without a membership",
+           ROLE_VIEWER in gh.get_roles(IDENTITY_GHOST, ORG))
+    members.remove_membership(IDENTITY_GHOST, ORG)
+    _check("stray grant cleared", gh.get_roles(IDENTITY_GHOST, ORG) == [])
+    _check("no membership row created", members.get_status(IDENTITY_GHOST, ORG) is None)
+
+
+# ---- explain (docs/MODEL.md, "Explaining a decision") ---------------------
+
+
+def _run_explain_scenarios(gh: Gatedhouse) -> None:
+    members = gh.membership_manager()
+    roles = gh.role_manager()
+    members.create_membership(IDENTITY_ERIN, ORG, EntityType.USER)
+    roles.assign_to_identity(IDENTITY_ERIN, ORG, ROLE_EDITOR)  # editor -> viewer -> (projects, read)
+    roles.assign_to_identity(IDENTITY_ERIN, ORG, ROLE_READER)  # (svc, *, read)
+    gh.group_manager().add_identity_to_group(GROUP_ENG, ORG, IDENTITY_ERIN)  # group -> deployer
+
+    _section("Explain: every path, through inheritance and wildcards")
+    read = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ)
+    _check("read is ALLOWED", read.outcome is ExplanationOutcome.ALLOWED and read.allowed)
+    _check("membership status reported as ACTIVE",
+           read.membership_status is MembershipStatus.ACTIVE)
+    _check("two paths grant read", len(read.paths) == 2)
+    _check("inherited path: DIRECT [editor, viewer] -> (svc, projects, read)",
+           any(p.source is GrantSource.DIRECT
+               and p.role_chain == (ROLE_EDITOR, ROLE_VIEWER)
+               and p.assigned_role == ROLE_EDITOR and p.granting_role == ROLE_VIEWER
+               and p.grant == EffectivePermission(SVC, RES_PROJ, ACT_READ)
+               for p in read.paths))
+    _check("wildcard path: DIRECT [reader] -> (svc, *, read)",
+           any(p.source is GrantSource.DIRECT
+               and p.role_chain == (ROLE_READER,)
+               and p.grant == EffectivePermission(SVC, None, ACT_READ)
+               for p in read.paths))
+
+    deploy = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DEPLOY)
+    _check("deploy is ALLOWED via one path", deploy.allowed and len(deploy.paths) == 1)
+    via_group = deploy.paths[0]
+    _check("group path names its source and group",
+           via_group.source is GrantSource.GROUP and via_group.group_id == GROUP_ENG
+           and via_group.role_chain == (ROLE_DEPLOYER,))
+
+    _section("Explain: denials say why")
+    delete = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_DELETE)
+    _check("delete is NO_MATCHING_GRANT with no paths",
+           delete.outcome is ExplanationOutcome.NO_MATCHING_GRANT
+           and delete.paths == () and not delete.allowed)
+
+    members.set_status(IDENTITY_ERIN, ORG, MembershipStatus.SUSPENDED)
+    suspended = gh.explain_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ)
+    _check("suspended read is MEMBERSHIP_NOT_ACTIVE",
+           suspended.outcome is ExplanationOutcome.MEMBERSHIP_NOT_ACTIVE)
+    _check("suspended explanation still shows what reactivation restores",
+           len(suspended.paths) == 2)
+    _check("explain and has_permission agree for the suspended member",
+           suspended.allowed == gh.has_permission(IDENTITY_ERIN, ORG, SVC, RES_PROJ, ACT_READ))
+    members.set_status(IDENTITY_ERIN, ORG, MembershipStatus.ACTIVE)
+
+    unknown = gh.explain_permission("noSuchIdentity", ORG, SVC, RES_PROJ, ACT_READ)
+    _check("unknown identity is NO_MEMBERSHIP with no status and no paths",
+           unknown.outcome is ExplanationOutcome.NO_MEMBERSHIP
+           and unknown.membership_status is None and unknown.paths == ())
+
+    roles.assign_to_identity(IDENTITY_GHOST, ORG, ROLE_VIEWER)  # stray grant, no membership
+    stray = gh.explain_permission(IDENTITY_GHOST, ORG, SVC, RES_PROJ, ACT_READ)
+    _check("stray grant is surfaced: NO_MEMBERSHIP with one path",
+           stray.outcome is ExplanationOutcome.NO_MEMBERSHIP and len(stray.paths) == 1)
+
+    _section("Explain: agrees with has_permission everywhere")
+    identities = [IDENTITY_ALICE, IDENTITY_BOB, IDENTITY_CAROL, IDENTITY_DAVE,
+                  IDENTITY_ERIN, IDENTITY_GHOST, "noSuchIdentity"]
+    permissions = [(RES_PROJ, ACT_READ), (RES_PROJ, ACT_WRITE), (RES_PROJ, ACT_DELETE),
+                   (RES_PROJ, ACT_DEPLOY), (RES_DOC, ACT_READ)]
+    disagreements = sum(
+        1
+        for identity in identities
+        for (res, act) in permissions
+        if gh.explain_permission(identity, ORG, SVC, res, act).allowed
+        != gh.has_permission(identity, ORG, SVC, res, act)
+    )
+    _check("explain_permission().allowed == has_permission() for 35 identity/permission pairs",
+           disagreements == 0)
+
+
+def _audit_deletes(database: _Db, table: str, identity_id: str) -> int:
+    return _count(
+        database,
+        "SELECT count(*) FROM gatedhouse.audit_log "
+        f"WHERE table_name = 'gatedhouse.{table}' AND op = 'DELETE' "
+        "AND old_row->>'identity_id' = %s",
+        identity_id,
+    )
+
+
+def _membership_rows(database: _Db, identity_id: str) -> int:
+    return _count(
+        database,
+        "SELECT count(*) FROM gatedhouse.memberships "
+        f"WHERE identity_id = %s AND org_id = '{ORG}'",
+        identity_id,
+    )
+
+
+def _count(database: _Db, sql: str, param: str) -> int:
+    with database.connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (param,))
+        return cur.fetchone()[0]
+
 
 
 # ---- cache scenarios -----------------------------------------------------
@@ -450,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
             _setup_catalog(gh)
             _setup_roles_and_memberships(gh)
             _run_scenarios(gh)
+            _run_lifecycle_scenarios(gh, database)
+            _run_explain_scenarios(gh)
             _run_cache_scenarios(gh, cache)
             _run_ttl_scenario(database)
         finally:

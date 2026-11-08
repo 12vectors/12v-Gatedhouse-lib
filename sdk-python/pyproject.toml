@@ -45,4 +45,5 @@ packages = ["gatedhouse"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "gatedhouse/migrations/V001__init.sql" = "gatedhouse/migrations/V001__init.sql"
+"gatedhouse/migrations/V002__membership_removed_status.sql" = "gatedhouse/migrations/V002__membership_removed_status.sql"
 "gatedhouse/migrations/migrations.txt" = "gatedhouse/migrations/migrations.txt"
