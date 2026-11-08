@@ -305,6 +305,9 @@ Same components in all three SDKs, adapted to each platform's web standard: Java
 | Build from subject | `GatedContext.fromSubject(subject)` | `GatedContext.from_subject(subject)` | `GatedContext::from_subject(&subject)` |
 | Claim helpers | `isAdmin()` / `isHuman()` / `isDelegated()` / `hasScope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` | `is_admin()` / `is_human()` / `is_delegated()` / `has_scope(s)` |
 | OAuth helper | `SphinxClient` (`java.net.http`) | `SphinxClient` (stdlib `urllib`) | `SphinxClient` (`ureq`) → `Result<_, SphinxError>` |
+| OAuth call timeout (default 10 s; no single network wait exceeds it) | `new SphinxClient(url, id, secret, Duration timeout)` | `SphinxClient(url, id, secret, timeout=10.0)` | `SphinxClient::new(url, id, secret).with_timeout(d)` |
+| OAuth failure (never retried) | `SphinxException` (a `RuntimeException`): `kind()` = `TIMEOUT` / `TRANSPORT` / `HTTP_STATUS` / `INVALID_RESPONSE`, `statusCode()` | `SphinxError` (a `RuntimeError`): `.kind` = `SphinxError.Kind.*`, `.status_code` | `SphinxError { kind: SphinxErrorKind::*, status_code, message }` |
+| JWKS fetch timeout (default 5 s) | `TokenVerifierConfig.builder().jwksTimeout(d)` | `TokenVerifierConfig(..., jwks_timeout=5.0)` | `TokenVerifierConfig::new(..).with_jwks_timeout(d)` |
 | API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) / `gatedhouse.asgi.GatedhouseApiFilter` (ASGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
 | Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI) / `gatedhouse.asgi.GatedhouseWebFilter` (ASGI, reads `scope["session"]`) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
 | Privilege asserts | `requireAdmin/requireHuman/requireScope` (throw `ForbiddenException`) | `require_admin/require_human/require_scope` (raise `ForbiddenException`) | `require_admin/require_human/require_scope` (return `FilterError::Forbidden`) |
@@ -1234,7 +1237,13 @@ If the parent role doesn't exist (`hasRole(parent) == false`), the FK insert wil
 
 ### `TokenVerificationException(JWKS_UNAVAILABLE)`
 
-Your application can't reach the configured `jwksUri`. Network-level issue, not a token issue. Curl the JWKS URL from the host running Gatedhouse to confirm.
+Your application can't reach the configured `jwksUri`, or the endpoint didn't answer within the JWKS timeout (default 5 s; set it on `TokenVerifierConfig`). Network-level issue, not a token issue. Curl the JWKS URL from the host running Gatedhouse to confirm.
+
+Java releases before this fix reported a failed JWKS fetch as `UNKNOWN_KEY` rather than `JWKS_UNAVAILABLE`. If your monitoring treats `UNKNOWN_KEY` as a possible forged token, expect fewer of those during IdP outages after upgrading.
+
+### `SphinxException` / `SphinxError`
+
+Check the kind. `TIMEOUT` and `TRANSPORT` mean the IdP is unavailable: show "try again" and let the user retry the *login*, but don't automatically retry `exchangeCode`, because authorization codes are single-use. `HTTP_STATUS` means the IdP refused the request (the status and body are on the error; an already-used or expired code is the usual cause), and `INVALID_RESPONSE` usually means a proxy answered in place of the IdP.
 
 ### Migration command fails: "permission denied for database"
 

@@ -30,6 +30,8 @@ const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 pub(crate) struct JwtVerification {
     jwks_uri: String,
+    /// Bounds connecting and each read with `TokenVerifierConfig::jwks_timeout`.
+    agent: ureq::Agent,
     issuer: String,
     audience: String,
     cache: Mutex<JwksCacheState>,
@@ -44,6 +46,7 @@ impl JwtVerification {
     pub(crate) fn new(config: &TokenVerifierConfig) -> Self {
         Self {
             jwks_uri: config.jwks_uri.clone(),
+            agent: crate::sphinx_client::agent_with_timeout(config.jwks_timeout),
             issuer: config.issuer.clone(),
             audience: config.audience.clone(),
             cache: Mutex::new(JwksCacheState {
@@ -111,7 +114,7 @@ impl JwtVerification {
             .unwrap_or(false);
 
         if state.jwks.is_none() || !recently_refreshed {
-            let fresh = fetch_jwks(&self.jwks_uri)?;
+            let fresh = fetch_jwks(&self.agent, &self.jwks_uri)?;
             state.jwks = Some(fresh);
             state.last_refresh = Some(now);
         }
@@ -183,8 +186,8 @@ impl JwtVerification {
     }
 }
 
-fn fetch_jwks(uri: &str) -> Result<JwkSet, TokenVerificationError> {
-    let response = ureq::get(uri).call().map_err(|e| {
+fn fetch_jwks(agent: &ureq::Agent, uri: &str) -> Result<JwkSet, TokenVerificationError> {
+    let response = agent.get(uri).call().map_err(|e| {
         TokenVerificationError::new(
             TokenVerificationReason::JwksUnavailable,
             format!("JWKS endpoint unreachable ({uri}): {e}"),

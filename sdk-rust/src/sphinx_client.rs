@@ -6,16 +6,59 @@
 //!
 //! Uses `ureq` (already a dependency for JWKS fetching), mirroring the
 //! Java `SphinxClient` which uses `java.net.http.HttpClient`.
+//!
+//! Every call is bounded: no network wait (connecting, or waiting for data)
+//! exceeds [`SphinxClient::timeout`], which defaults to
+//! [`SphinxClient::DEFAULT_TIMEOUT`]. Failures are reported as
+//! [`SphinxError`], whose [`kind`](SphinxError::kind) tells a timeout or an
+//! unreachable IdP apart from a refused request. The client never retries.
 
+use std::error::Error as StdError;
 use std::fmt;
+use std::io;
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-/// Failure talking to a Sphinx OAuth endpoint (transport error or
-/// non-200 token response).
+/// How a Sphinx call failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SphinxErrorKind {
+    /// A network wait (connecting, or waiting for data) exceeded the client's timeout.
+    Timeout,
+    /// The endpoint could not be reached, or the connection failed, other
+    /// than by timing out.
+    Transport,
+    /// The endpoint answered with an unsuccessful HTTP status; see
+    /// [`SphinxError::status_code`].
+    HttpStatus,
+    /// The endpoint answered, but the body was not the expected JSON object.
+    InvalidResponse,
+}
+
+/// A [`SphinxClient`] call failed. [`kind`](Self::kind) says how, so a host
+/// can tell "the IdP is unavailable, try again" (`Timeout`, `Transport`)
+/// apart from "the request was refused" (`HttpStatus`, e.g. an invalid or
+/// already-used authorization code).
+///
+/// The library never retries. In particular, do not blindly retry
+/// [`SphinxClient::exchange_code`] after a timeout: authorization codes are
+/// single-use, and the IdP may already have consumed the code.
 #[derive(Debug)]
 pub struct SphinxError {
+    pub kind: SphinxErrorKind,
+    /// The HTTP status for [`SphinxErrorKind::HttpStatus`]; `None` otherwise.
+    pub status_code: Option<u16>,
     pub message: String,
+}
+
+impl SphinxError {
+    fn new(kind: SphinxErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            status_code: None,
+            message: message.into(),
+        }
+    }
 }
 
 impl fmt::Display for SphinxError {
@@ -38,13 +81,21 @@ pub struct TokenResponse {
 }
 
 /// HTTP client wrapper to orchestrate Sphinx SSO OAuth 2.0 endpoints.
+/// Create one and reuse it.
 pub struct SphinxClient {
     base_url: String,
     client_id: String,
     client_secret: String,
+    timeout: Duration,
+    agent: ureq::Agent,
 }
 
 impl SphinxClient {
+    /// The timeout used when none is given: 10 seconds.
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// A client with [`DEFAULT_TIMEOUT`](Self::DEFAULT_TIMEOUT); use
+    /// [`with_timeout`](Self::with_timeout) to change it.
     pub fn new(
         base_url: impl Into<String>,
         client_id: impl Into<String>,
@@ -58,7 +109,26 @@ impl SphinxClient {
             base_url,
             client_id: client_id.into(),
             client_secret: client_secret.into(),
+            timeout: Self::DEFAULT_TIMEOUT,
+            agent: agent_with_timeout(Self::DEFAULT_TIMEOUT),
         }
+    }
+
+    /// Sets the longest any single network wait may take.
+    ///
+    /// # Panics
+    ///
+    /// If `timeout` is zero.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        assert!(!timeout.is_zero(), "SphinxClient timeout must be positive");
+        self.timeout = timeout;
+        self.agent = agent_with_timeout(timeout);
+        self
+    }
+
+    /// The longest any single network wait may take.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     /// Exchanges an authorization code for tokens.
@@ -124,24 +194,14 @@ impl SphinxClient {
 
     /// Introspects an access token.
     pub fn introspect(&self, token: &str) -> Result<Map<String, Value>, SphinxError> {
-        let url = format!("{}/api/sphinx/v1/oauth/introspect", self.base_url);
-        // The introspection endpoint conveys inactive/invalid tokens in
-        // the body; parse it regardless of status.
-        let response = match ureq::post(&url).send_form(&[("token", token)]) {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(e) => {
-                return Err(SphinxError {
-                    message: format!("Introspection failed: {e}"),
-                })
-            }
-        };
-        let json: Value = response.into_json().map_err(|e| SphinxError {
-            message: format!("Introspection failed: {e}"),
-        })?;
-        json.as_object().cloned().ok_or_else(|| SphinxError {
-            message: "Introspection failed: response is not a JSON object".to_string(),
-        })
+        // The introspection endpoint conveys inactive or invalid tokens in
+        // the body, so the body is parsed whatever the status.
+        let (_, body) = self.post_form(
+            "/api/sphinx/v1/oauth/introspect",
+            &[("token", token)],
+            "Introspection",
+        )?;
+        parse_object(&body, "Introspection")
     }
 
     /// Builds a redirect URL to the standard Sphinx login page.
@@ -168,24 +228,15 @@ impl SphinxClient {
     }
 
     fn post_token(&self, form: &[(&str, &str)]) -> Result<TokenResponse, SphinxError> {
-        let url = format!("{}/api/sphinx/v1/oauth/token", self.base_url);
-        let response = match ureq::post(&url).send_form(form) {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) => {
-                let body = r.into_string().unwrap_or_default();
-                return Err(SphinxError {
-                    message: format!("Token request failed ({code}): {body}"),
-                });
-            }
-            Err(e) => {
-                return Err(SphinxError {
-                    message: format!("Token request failed: {e}"),
-                })
-            }
-        };
-        let json: Value = response.into_json().map_err(|e| SphinxError {
-            message: format!("Token request failed: {e}"),
-        })?;
+        let (status, body) = self.post_form("/api/sphinx/v1/oauth/token", form, "Token request")?;
+        if status != 200 {
+            return Err(SphinxError {
+                kind: SphinxErrorKind::HttpStatus,
+                status_code: Some(status),
+                message: format!("Token request failed ({status}): {body}"),
+            });
+        }
+        let json = parse_object(&body, "Token request")?;
         let str_field = |name: &str| json.get(name).and_then(Value::as_str).map(str::to_string);
         Ok(TokenResponse {
             access_token: str_field("access_token"),
@@ -195,6 +246,97 @@ impl SphinxClient {
             scope: str_field("scope"),
             issued_token_type: str_field("issued_token_type"),
         })
+    }
+
+    /// POSTs a form; returns `(status, body)` for any HTTP answer, and a
+    /// [`SphinxError`] when there is none.
+    fn post_form(
+        &self,
+        path: &str,
+        form: &[(&str, &str)],
+        op: &str,
+    ) -> Result<(u16, String), SphinxError> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = match self.agent.post(&url).send_form(form) {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r, // an HTTP answer, just not 2xx
+            Err(ureq::Error::Transport(t)) => {
+                return Err(if is_timeout(&t) {
+                    self.timed_out(op)
+                } else {
+                    SphinxError::new(SphinxErrorKind::Transport, format!("{op} failed: {t}"))
+                })
+            }
+        };
+        let status = response.status();
+        match response.into_string() {
+            Ok(body) => Ok((status, body)),
+            Err(e) if is_timeout_io(&e) => Err(self.timed_out(op)),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => Err(SphinxError::new(
+                SphinxErrorKind::InvalidResponse,
+                format!("{op} returned a response that could not be read: {e}"),
+            )),
+            Err(e) => Err(SphinxError::new(
+                SphinxErrorKind::Transport,
+                format!("{op} failed reading the response: {e}"),
+            )),
+        }
+    }
+
+    fn timed_out(&self, op: &str) -> SphinxError {
+        SphinxError::new(
+            SphinxErrorKind::Timeout,
+            format!("{op} timed out (timeout {} ms)", self.timeout.as_millis()),
+        )
+    }
+}
+
+/// An agent bounding connecting, each read and each write.
+pub(crate) fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .timeout_write(timeout)
+        .build()
+}
+
+/// True if the transport error was caused by a timeout anywhere in its
+/// source chain.
+fn is_timeout(error: &ureq::Transport) -> bool {
+    let mut source: Option<&(dyn StdError + 'static)> = error.source();
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<io::Error>() {
+            if is_timeout_io(io) {
+                return true;
+            }
+        }
+        source = e.source();
+    }
+    false
+}
+
+/// Read timeouts surface as `TimedOut` on most platforms and `WouldBlock`
+/// on some.
+fn is_timeout_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
+fn parse_object(body: &str, op: &str) -> Result<Map<String, Value>, SphinxError> {
+    let json: Value = serde_json::from_str(body).map_err(|e| {
+        SphinxError::new(
+            SphinxErrorKind::InvalidResponse,
+            format!("{op} returned a response that is not JSON: {e}"),
+        )
+    })?;
+    match json {
+        Value::Object(map) => Ok(map),
+        _ => Err(SphinxError::new(
+            SphinxErrorKind::InvalidResponse,
+            format!("{op} returned JSON that is not an object"),
+        )),
     }
 }
 
