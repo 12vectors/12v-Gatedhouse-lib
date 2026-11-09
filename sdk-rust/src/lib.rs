@@ -36,15 +36,16 @@ mod sql;
 pub use config::{GatedhouseConfig, GatedhouseConfigBuilder};
 pub use database::{from_fn, ConnectionError, Database, FnDatabase, OwnedClient, PooledClient};
 #[cfg(feature = "r2d2")]
-pub use database::{PoolSettings, PooledDatabase};
+pub use database::{PoolSettings, PooledDatabase, ALIVE_BYPASS_WINDOW};
 pub use enums::{EntityType, MembershipStatus};
 pub use error::{
     DatabaseErrorKind, GatedhouseError, TokenVerificationError, TokenVerificationReason,
 };
 pub use factory::GatedhouseFactory;
 pub use filters::{
-    FilterError, GatedhouseApiFilter, GatedhouseWebFilter, WebFilterOutcome, DEFAULT_LOGIN_PATH,
-    DEFAULT_SESSION_TOKEN_ATTR, SECURITY_HEADERS, WWW_AUTHENTICATE,
+    bearer_token, FilterError, GatedhouseApiFilter, GatedhouseWebFilter, WebFilterOutcome,
+    DEFAULT_LOGIN_PATH, DEFAULT_SESSION_TOKEN_ATTR, RETRY_AFTER_SECONDS, SECURITY_HEADERS,
+    WWW_AUTHENTICATE,
 };
 pub use gated_context::GatedContext;
 pub use gatedhouse::Gatedhouse;

@@ -573,3 +573,59 @@ fn an_invalid_connection_string_is_an_initialization_error() {
         Err(GatedhouseError::Initialization(_))
     ));
 }
+
+// ---- the Gatedhouse-owned pool ---------------------------------------------
+
+#[test]
+fn owned_pool_bounds_statements_and_a_timeout_is_unavailable() {
+    let url = database_url!();
+    let settings = PoolSettings::default().with_statement_timeout(Duration::from_millis(300));
+    let pool = PooledDatabase::from_url_with(&url, settings).unwrap();
+    let mut conn = pool.connection().unwrap();
+    let shown: String = conn.query_one("SHOW statement_timeout", &[]).unwrap().get(0);
+    assert_eq!("300ms", shown);
+    let slow = conn.batch_execute("SELECT pg_sleep(2)").unwrap_err();
+    assert_eq!(Some(DatabaseErrorKind::Unavailable), GatedhouseError::from(slow).database_kind());
+    assert_eq!(Duration::from_secs(30), PoolSettings::default().statement_timeout());
+}
+
+/// The last statement the pooled backend ran, read from another session.
+fn last_query(url: &str, pid: i32) -> String {
+    let mut admin = Client::connect(url, NoTls).unwrap();
+    admin
+        .query_one("SELECT query FROM pg_stat_activity WHERE pid = $1", &[&pid])
+        .unwrap()
+        .get(0)
+}
+
+#[test]
+fn owned_pool_pings_only_connections_that_sat_idle() {
+    let url = database_url!();
+    let pool = PooledDatabase::from_url_with(&url, PoolSettings::default().with_max_size(1)).unwrap();
+    let pid: i32 = {
+        let mut conn = pool.connection().unwrap();
+        conn.query_one("SELECT pg_backend_pid() /* marker */", &[]).unwrap().get(0)
+    };
+    // Back-to-back reuse: handed out without a liveness round trip.
+    drop(pool.connection().unwrap());
+    assert!(last_query(&url, pid).contains("marker"), "recently used connection was pinged");
+    // Idle beyond the window: checked before it is handed out.
+    thread::sleep(gatedhouse::ALIVE_BYPASS_WINDOW + Duration::from_millis(200));
+    drop(pool.connection().unwrap());
+    assert_eq!("", last_query(&url, pid), "idle connection was not checked");
+}
+
+#[test]
+fn owned_pool_replaces_a_connection_that_died_while_idle() {
+    let url = database_url!();
+    let pool = PooledDatabase::from_url_with(&url, PoolSettings::default().with_max_size(1)).unwrap();
+    let pid: i32 = pool.connection().unwrap().query_one("SELECT pg_backend_pid()", &[]).unwrap().get(0);
+    Client::connect(&url, NoTls)
+        .unwrap()
+        .execute("SELECT pg_terminate_backend($1)", &[&pid])
+        .unwrap();
+    thread::sleep(gatedhouse::ALIVE_BYPASS_WINDOW + Duration::from_millis(200));
+    let mut conn = pool.connection().unwrap();
+    let new_pid: i32 = conn.query_one("SELECT pg_backend_pid()", &[]).unwrap().get(0);
+    assert_ne!(pid, new_pid, "the dead connection was handed out");
+}

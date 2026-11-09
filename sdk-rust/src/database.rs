@@ -94,14 +94,16 @@ where
 }
 
 #[cfg(feature = "r2d2")]
-pub use self::pooled::{PoolSettings, PooledDatabase};
+pub use self::pooled::{PoolSettings, PooledDatabase, ALIVE_BYPASS_WINDOW};
 
 #[cfg(feature = "r2d2")]
 mod pooled {
-    use std::time::Duration;
+    use std::ops::{Deref, DerefMut};
+    use std::time::{Duration, Instant};
 
     use postgres::tls::{MakeTlsConnect, TlsConnect};
-    use postgres::{NoTls, Socket};
+    use postgres::{Client, NoTls, Socket};
+    use r2d2::ManageConnection;
     use r2d2_postgres::PostgresConnectionManager;
 
     use super::{ConnectionError, Database, PooledClient};
@@ -126,6 +128,7 @@ mod pooled {
         max_size: u32,
         connection_timeout: Duration,
         max_lifetime: Duration,
+        statement_timeout: Duration,
     }
 
     impl PoolSettings {
@@ -135,6 +138,8 @@ mod pooled {
         pub const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
         /// Default [`max_lifetime`](Self::max_lifetime): 30 minutes.
         pub const DEFAULT_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
+        /// Default [`statement_timeout`](Self::statement_timeout): 30 seconds.
+        pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
         /// Most connections the pool opens.
         ///
@@ -173,6 +178,19 @@ mod pooled {
             self
         }
 
+        /// Longest any single statement may run before PostgreSQL cancels it
+        /// (then [`DatabaseErrorKind::Unavailable`](crate::DatabaseErrorKind::Unavailable)),
+        /// so a slow or blocked query cannot hold a connection indefinitely.
+        /// Zero means no limit. Set on the pool's own sessions only.
+        pub fn with_statement_timeout(mut self, timeout: Duration) -> Self {
+            self.statement_timeout = timeout;
+            self
+        }
+
+        pub fn statement_timeout(&self) -> Duration {
+            self.statement_timeout
+        }
+
         pub fn max_size(&self) -> u32 {
             self.max_size
         }
@@ -192,6 +210,7 @@ mod pooled {
                 max_size: Self::DEFAULT_MAX_SIZE,
                 connection_timeout: Self::DEFAULT_CONNECTION_TIMEOUT,
                 max_lifetime: Self::DEFAULT_MAX_LIFETIME,
+                statement_timeout: Self::DEFAULT_STATEMENT_TIMEOUT,
             }
         }
     }
@@ -205,6 +224,114 @@ mod pooled {
     /// holds it through the config's `Arc<dyn Database>`.
     pub struct PooledDatabase {
         pool: Box<dyn Database>,
+    }
+
+    /// A connection returned within this window is handed out without a
+    /// liveness check (HikariCP's default), saving a round trip per
+    /// operation under load; an idle one is checked first.
+    pub const ALIVE_BYPASS_WINDOW: Duration = Duration::from_millis(500);
+
+    /// The pool's own connection manager: wraps `r2d2_postgres` to set the
+    /// statement timeout on each new session and to skip the liveness check
+    /// for recently used connections.
+    struct GatedhouseManager<T>
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
+        inner: PostgresConnectionManager<T>,
+        statement_timeout_ms: u128,
+    }
+
+    struct PoolClient {
+        client: Client,
+        /// When the connection last came back to the pool.
+        returned_at: Option<Instant>,
+    }
+
+    impl<T> ManageConnection for GatedhouseManager<T>
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
+        type Connection = PoolClient;
+        type Error = postgres::Error;
+
+        fn connect(&self) -> Result<PoolClient, postgres::Error> {
+            let mut client = self.inner.connect()?;
+            // The pool is Gatedhouse's own, so its sessions may carry settings.
+            client.batch_execute(&format!("SET statement_timeout = {}", self.statement_timeout_ms))?;
+            Ok(PoolClient { client, returned_at: None })
+        }
+
+        fn is_valid(&self, conn: &mut PoolClient) -> Result<(), postgres::Error> {
+            if conn.returned_at.is_some_and(|t| t.elapsed() < ALIVE_BYPASS_WINDOW) {
+                return Ok(());
+            }
+            conn.client.simple_query("").map(|_| ())
+        }
+
+        /// r2d2 calls this whenever a connection is returned.
+        fn has_broken(&self, conn: &mut PoolClient) -> bool {
+            conn.returned_at = Some(Instant::now());
+            conn.client.is_closed()
+        }
+    }
+
+    /// The borrowed handle, dereferencing to the `Client` inside.
+    struct Handle<T>(r2d2::PooledConnection<GatedhouseManager<T>>)
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send;
+
+    impl<T> Deref for Handle<T>
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
+        type Target = Client;
+        fn deref(&self) -> &Client {
+            &self.0.client
+        }
+    }
+
+    impl<T> DerefMut for Handle<T>
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
+        fn deref_mut(&mut self) -> &mut Client {
+            &mut self.0.client
+        }
+    }
+
+    struct OwnedPool<T>(r2d2::Pool<GatedhouseManager<T>>)
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send;
+
+    impl<T> Database for OwnedPool<T>
+    where
+        T: MakeTlsConnect<Socket> + Clone + 'static + Sync + Send,
+        T::TlsConnect: Send,
+        T::Stream: Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
+        fn connection(&self) -> Result<PooledClient, ConnectionError> {
+            Ok(Box::new(Handle(self.0.get()?)))
+        }
     }
 
     impl PooledDatabase {
@@ -234,7 +361,10 @@ mod pooled {
             let config: postgres::Config = conninfo.parse().map_err(|e| {
                 GatedhouseError::Initialization(format!("invalid connection string: {e}"))
             })?;
-            let manager = PostgresConnectionManager::new(config, tls);
+            let manager = GatedhouseManager {
+                inner: PostgresConnectionManager::new(config, tls),
+                statement_timeout_ms: settings.statement_timeout.as_millis(),
+            };
             // build_unchecked: creating the pool must not fail just because
             // the database is briefly unreachable; the first operation
             // reports it.
@@ -246,7 +376,7 @@ mod pooled {
                 .test_on_check_out(true)
                 .error_handler(Box::new(r2d2::NopErrorHandler))
                 .build_unchecked(manager);
-            Ok(Self { pool: Box::new(pool) })
+            Ok(Self { pool: Box::new(OwnedPool(pool)) })
         }
     }
 

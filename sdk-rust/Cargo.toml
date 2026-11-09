@@ -8,6 +8,8 @@ repository = "https://github.com/12vectors/12v-Gatedhouse-lib"
 keywords = ["authorization", "rbac", "permissions", "postgres", "jwt"]
 categories = ["authentication"]
 rust-version = "1.74"
+# Not shipped: test fixtures (a throwaway RSA key) and the smoke-test example.
+exclude = ["tests/data/*", "examples/*"]
 
 [dependencies]
 # Postgres driver (sync; matches Java/Python SDKs which are sync).
@@ -41,9 +43,9 @@ r2d2 = ["dep:r2d2", "dep:r2d2_postgres"]
 name = "gatedhouse-migrate"
 path = "src/bin/migrate.rs"
 
-[[bin]]
-name = "gatedhouse-smoke-test"
-path = "src/bin/smoke_test.rs"
-# Runs through PooledDatabase::from_url, so the smoke test exercises the
-# Gatedhouse-owned pool: cargo run --features r2d2 --bin gatedhouse-smoke-test
+[[example]]
+name = "smoke_test"
+# Development tool, not shipped as a binary. Runs through
+# PooledDatabase::from_url, so it exercises the Gatedhouse-owned pool:
+#   cargo run --features r2d2 --example smoke_test -- <conninfo>
 required-features = ["r2d2"]

@@ -20,6 +20,7 @@ use crate::permission_cache::PermissionCache;
 use crate::permission_catalog::{DefaultPermissionCatalog, PermissionCatalog};
 use crate::role_manager::{DefaultRoleManager, RoleManager};
 use crate::sql;
+use postgres::types::Type;
 use crate::types::{
     AuthenticatedSubject, EffectivePermission, ExplanationOutcome, GrantPath, GrantSource,
     PermissionExplanation,
@@ -231,12 +232,15 @@ impl DefaultGatedhouse {
         org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
         let mut conn = sql::borrow(&*self.database, "load_effective_permissions")?;
-        let rows = conn.query(
+        // query_typed: parameter types are sent with the query, so this is
+        // one round trip instead of prepare + execute. This is the
+        // permission-check hot path.
+        let rows = conn.query_typed(
             LOAD_EFFECTIVE_PERMISSIONS_SQL,
             &[
-                &identity_id, &org_id, // active_membership
-                &identity_id, &org_id, // direct_roles part 1
-                &identity_id, &org_id, // direct_roles part 2 (groups)
+                (&identity_id, Type::TEXT), (&org_id, Type::TEXT), // active_membership
+                (&identity_id, Type::TEXT), (&org_id, Type::TEXT), // direct_roles part 1
+                (&identity_id, Type::TEXT), (&org_id, Type::TEXT), // direct_roles part 2 (groups)
             ],
         )?;
         Ok(rows
@@ -318,9 +322,15 @@ impl Gatedhouse for DefaultGatedhouse {
         action: &str,
     ) -> Result<PermissionExplanation, GatedhouseError> {
         let mut conn = sql::borrow(&*self.database, "explain_permission")?;
-        let rows = conn.query(
+        let rows = conn.query_typed(
             EXPLAIN_PERMISSION_SQL,
-            &[&identity_id, &org_id, &service, &resource, &action],
+            &[
+                (&identity_id, Type::TEXT),
+                (&org_id, Type::TEXT),
+                (&service, Type::TEXT),
+                (&resource, Type::TEXT),
+                (&action, Type::TEXT),
+            ],
         )?;
         let mut membership_status = None;
         let mut paths = Vec::new();

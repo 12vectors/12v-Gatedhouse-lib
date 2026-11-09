@@ -7,7 +7,9 @@
 //! supplied conninfo string.
 //!
 //! Usage:
-//!     cargo run --bin gatedhouse-smoke-test -- <conninfo>
+//!     cargo run --features r2d2 --example smoke_test -- <conninfo>
+//!
+//! A development tool: not shipped as a binary of the crate.
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -70,9 +72,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 1 {
         eprintln!(
-            "Usage: gatedhouse-smoke-test <conninfo>\n\n\
+            "Usage: cargo run --features r2d2 --example smoke_test -- <conninfo>\n\n\
              Example:\n\
-             \x20   gatedhouse-smoke-test 'host=localhost user=postgres password=secret dbname=mydb'"
+             \x20   cargo run --features r2d2 --example smoke_test -- 'host=localhost user=postgres password=secret dbname=mydb'"
         );
         return ExitCode::from(2);
     }

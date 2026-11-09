@@ -9,14 +9,16 @@
 //! decision logic as plain calls: feed in the request's `Authorization`
 //! header (API) or session token (web) and get back either a verified
 //! [`GatedContext`] or the exact response the Java filters would write
-//! (401 JSON body / login redirect). Wire them into axum/actix/hyper
+//! (401 JSON body / 503 / login redirect). Wire them into axum/actix/hyper
 //! middleware in a few lines, adding [`SECURITY_HEADERS`] to every
-//! response as the Java filters do — and the challenge header from
-//! [`FilterError::challenge_header`] to error responses.
+//! response as the Java filters do, and to error responses the challenge
+//! header from [`FilterError::challenge_header`] and the `Retry-After`
+//! from [`FilterError::retry_after`].
 
 use std::fmt;
 use std::sync::Arc;
 
+use crate::error::TokenVerificationReason;
 use crate::gated_context::GatedContext;
 use crate::gatedhouse::Gatedhouse;
 
@@ -36,53 +38,86 @@ pub const DEFAULT_LOGIN_PATH: &str = "/auth/login";
 /// Default session attribute the web filter reads the token from.
 pub const DEFAULT_SESSION_TOKEN_ATTR: &str = "access_token";
 
+/// Seconds a client should wait before retrying after a 503.
+pub const RETRY_AFTER_SECONDS: u32 = 30;
+
 /// Authorization failure, carrying what the Java filters would have
-/// written to the response.
+/// written to the response. 401 bodies name a stable `reason` code, never
+/// the verifier's internal message (which can include the IdP's URL).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterError {
-    /// Maps to HTTP 401 (Java: 401 JSON body / `UnauthorizedException`).
-    Unauthorized(String),
-    /// Maps to HTTP 403 (Java: `ForbiddenException`).
+    /// HTTP 401 (Java: 401 JSON body / `UnauthorizedException`). `reason`
+    /// is the stable code (`"missing_token"`, `"expired"`, ...).
+    Unauthorized {
+        reason: Option<&'static str>,
+        detail: String,
+    },
+    /// HTTP 403 (Java: `ForbiddenException`).
     Forbidden(String),
+    /// HTTP 503 with `Retry-After`: the identity provider is unavailable.
+    /// The token is not at fault, so there is no challenge.
+    Unavailable,
 }
 
 impl FilterError {
     pub fn status(&self) -> u16 {
         match self {
-            FilterError::Unauthorized(_) => 401,
+            FilterError::Unauthorized { .. } => 401,
             FilterError::Forbidden(_) => 403,
+            FilterError::Unavailable => 503,
         }
     }
 
     /// The `WWW-Authenticate` challenge the host must emit with this error:
-    /// `Some` for 401 (RFC 6750 bare Bearer challenge), `None` for 403.
+    /// `Some` for 401 (RFC 6750 bare Bearer challenge), `None` otherwise.
     pub fn challenge_header(&self) -> Option<(&'static str, &'static str)> {
         match self {
-            FilterError::Unauthorized(_) => Some(WWW_AUTHENTICATE),
-            FilterError::Forbidden(_) => None,
+            FilterError::Unauthorized { .. } => Some(WWW_AUTHENTICATE),
+            _ => None,
+        }
+    }
+
+    /// Seconds for the `Retry-After` header: `Some` for 503.
+    pub fn retry_after(&self) -> Option<u32> {
+        match self {
+            FilterError::Unavailable => Some(RETRY_AFTER_SECONDS),
+            _ => None,
         }
     }
 
     pub fn error_code(&self) -> &'static str {
         match self {
-            FilterError::Unauthorized(_) => "unauthorized",
+            FilterError::Unauthorized { .. } => "unauthorized",
             FilterError::Forbidden(_) => "forbidden",
+            FilterError::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            FilterError::Unauthorized { reason, .. } => *reason,
+            FilterError::Forbidden(_) => None,
+            FilterError::Unavailable => Some("jwks_unavailable"),
         }
     }
 
     pub fn detail(&self) -> &str {
         match self {
-            FilterError::Unauthorized(d) | FilterError::Forbidden(d) => d,
+            FilterError::Unauthorized { detail, .. } | FilterError::Forbidden(detail) => detail,
+            FilterError::Unavailable => "Token verification is temporarily unavailable",
         }
     }
 
-    /// The `{"error":...,"detail":...}` body the Java API filter writes.
+    /// The `{"error":...,"reason":...,"detail":...}` body, byte-identical to
+    /// the Java and Python SDKs (same field order, compact).
     pub fn to_json_body(&self) -> String {
-        serde_json::json!({
-            "error": self.error_code(),
-            "detail": self.detail(),
-        })
-        .to_string()
+        let quote = |v: &str| serde_json::to_string(v).expect("string serializes");
+        let mut body = format!("{{\"error\":{}", quote(self.error_code()));
+        if let Some(reason) = self.reason() {
+            body.push_str(&format!(",\"reason\":{}", quote(reason)));
+        }
+        body.push_str(&format!(",\"detail\":{}}}", quote(self.detail())));
+        body
     }
 }
 
@@ -98,11 +133,23 @@ impl fmt::Display for FilterError {
     }
 }
 
+/// The token from an `Authorization` header value, or `None`. The scheme is
+/// matched case-insensitively (RFC 7235 section 2.1).
+pub fn bearer_token(authorization_header: &str) -> Option<&str> {
+    let scheme = authorization_header.get(..7)?;
+    if !scheme.eq_ignore_ascii_case("bearer ") {
+        return None;
+    }
+    let token = authorization_header[7..].trim();
+    (!token.is_empty()).then_some(token)
+}
+
 impl std::error::Error for FilterError {}
 
 /// API security guard enforcing `Authorization: Bearer` token
-/// validation. On failure, the returned [`FilterError`] carries a clean
-/// 401 JSON response.
+/// validation. On failure, the returned [`FilterError`] carries the
+/// response: 401 with a stable reason code for a missing or invalid token,
+/// 503 with `Retry-After` for an identity-provider outage.
 pub struct GatedhouseApiFilter {
     gatedhouse: Arc<dyn Gatedhouse>,
 }
@@ -118,17 +165,21 @@ impl GatedhouseApiFilter {
         &self,
         authorization_header: Option<&str>,
     ) -> Result<GatedContext, FilterError> {
-        let token = authorization_header
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .ok_or_else(|| {
-                FilterError::Unauthorized("Missing or invalid Bearer token".to_string())
-            })?;
-        match self.gatedhouse.verify_token(token.trim()) {
+        let token = authorization_header.and_then(bearer_token).ok_or_else(|| {
+            FilterError::Unauthorized {
+                reason: Some("missing_token"),
+                detail: "Missing or invalid Bearer token".to_string(),
+            }
+        })?;
+        match self.gatedhouse.verify_token(token) {
             Ok(subject) => Ok(GatedContext::from_subject(&subject)),
-            Err(e) => Err(FilterError::Unauthorized(format!(
-                "Token verification failed: {}",
-                e.message
-            ))),
+            Err(e) if e.reason == TokenVerificationReason::JwksUnavailable => {
+                Err(FilterError::Unavailable)
+            }
+            Err(e) => Err(FilterError::Unauthorized {
+                reason: Some(e.reason.code()),
+                detail: "Token verification failed".to_string(),
+            }),
         }
     }
 
@@ -175,6 +226,10 @@ pub enum WebFilterOutcome {
         location: String,
         clear_session_token: bool,
     },
+    /// The identity provider is unavailable: respond 503 with `Retry-After:`
+    /// [`RETRY_AFTER_SECONDS`]. Keep the session (the token may be valid)
+    /// and do not redirect to a login page that cannot work either.
+    Unavailable,
 }
 
 /// Web security guard for browser-facing pages using session-based
@@ -223,6 +278,9 @@ impl GatedhouseWebFilter {
         match self.gatedhouse.verify_token(token) {
             Ok(subject) => {
                 WebFilterOutcome::Authenticated(Box::new(GatedContext::from_subject(&subject)))
+            }
+            Err(e) if e.reason == TokenVerificationReason::JwksUnavailable => {
+                WebFilterOutcome::Unavailable
             }
             // Token is invalid or expired — have the host remove it from
             // the session and redirect.

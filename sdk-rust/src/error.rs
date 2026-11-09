@@ -112,16 +112,20 @@ impl GatedhouseError {
     }
 }
 
-/// Classifies a `postgres::Error`: SQLSTATE class 08 and 57P01-57P03 mean
-/// the database went away, as does a client-side failure with no SQLSTATE
-/// that closed the connection or came from the socket; anything else is the
-/// statement failing. The message keeps the SQLSTATE and the server's text.
+/// Classifies a `postgres::Error`. Transient conditions are `Unavailable`:
+/// SQLSTATE class 08 (connection exception), class 53 (insufficient
+/// resources), 57014 (statement timeout or cancellation), 57P01-57P03 (server
+/// shut down), and a client-side failure with no SQLSTATE that closed the
+/// connection or came from the socket. Anything else is the statement
+/// failing. The message keeps the SQLSTATE and the server's text.
 impl From<postgres::Error> for GatedhouseError {
     fn from(e: postgres::Error) -> Self {
         let unavailable = match e.code() {
             Some(code) => {
                 let code = code.code();
-                code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03")
+                code.starts_with("08")
+                    || code.starts_with("53")
+                    || matches!(code, "57014" | "57P01" | "57P02" | "57P03")
             }
             None => {
                 e.is_closed()
@@ -179,6 +183,24 @@ pub enum TokenVerificationReason {
 
     /// Verification failed for an unexpected reason; see message.
     Other,
+}
+
+impl TokenVerificationReason {
+    /// The stable code sent to clients (`"expired"`, `"invalid_signature"`,
+    /// ...), identical to the Java and Python SDKs.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TokenVerificationReason::Expired => "expired",
+            TokenVerificationReason::NotYetValid => "not_yet_valid",
+            TokenVerificationReason::InvalidSignature => "invalid_signature",
+            TokenVerificationReason::InvalidIssuer => "invalid_issuer",
+            TokenVerificationReason::InvalidAudience => "invalid_audience",
+            TokenVerificationReason::Malformed => "malformed",
+            TokenVerificationReason::UnknownKey => "unknown_key",
+            TokenVerificationReason::JwksUnavailable => "jwks_unavailable",
+            TokenVerificationReason::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug)]
