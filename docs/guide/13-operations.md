@@ -1,158 +1,112 @@
 # 13. Operations
 
-## Schema migrations
+## Schema
 
-Gatedhouse keeps its tables in the `gatedhouse` schema and versions them.
-The current schema version is **2**.
+All objects are in schema `gatedhouse`. Current version: **2**
+(1: base schema and `gatedhouse:owner`; 2: `REMOVED` membership status).
 
-| Version | Adds |
-|---|---|
-| 1 | catalog, roles, grants, inheritance, memberships, groups, audit log, the `gatedhouse:owner` role |
-| 2 | the `REMOVED` membership status |
+| Table | Scope | Key / content |
+|---|---|---|
+| `services`, `resources`, `actions` | global | catalog; composite keys `(service[, resource[, action]])` |
+| `roles` | global | `key`, `name`, `description`, `is_system` |
+| `role_permissions` | global | `(role_key, service, resource, action)`; nullable parts = wildcards; unique per role |
+| `role_inherits` | global | `(child_key, parent_key)`, `child <> parent` |
+| `memberships` | per org | unique `(identity_id, org_id)`, `entity_type`, `status` |
+| `role_assignments` | per org | unique `(identity_id, org_id, role_key)` |
+| `groups` | per org | key `(id, org_id)`, `name`, `description` |
+| `group_memberships`, `group_roles` | per org | `(group_id, org_id, identity_id)`, `(group_id, org_id, role_key)` |
+| `audit_log` | | change history (below) |
+| `schema_versions` | | applied migrations |
 
-How migrations behave:
+Foreign keys cascade on delete (catalog → grants; roles → grants,
+inheritance, assignments; groups → members, group roles). There is no
+foreign key from grants to memberships. Library-generated keys are UUIDs;
+identity, org and group IDs are host-supplied text. All lookups used by
+checks are indexed.
 
-- They run only when you ask (CLI or `GatedhouseFactory.migrate`), never at
-  application startup.
-- Each version is applied once, in its own transaction, and recorded in
-  `gatedhouse.schema_versions` with its name and a SHA-256 checksum. The
-  checksum is recorded for reference; it is not compared on later runs.
-- A PostgreSQL advisory lock serializes concurrent runs, so several
-  instances can run the migration at the same time safely.
-- The migration user needs `CREATE` on the database (to create the schema);
-  the application user needs only `USAGE` on the schema and read/write on its
-  tables and sequences. Run migrations as part of a controlled deploy step,
-  not as the application user.
+## Migrations
 
-**At startup**, `create` compares the database's version with the one the
-library expects and refuses to start if it is older or missing.
+- Run only on request (CLI or `GatedhouseFactory.migrate`).
+- Each version applies once in its own transaction; recorded in
+  `schema_versions` with a SHA-256 checksum (recorded, not verified later).
+- Serialized by a PostgreSQL advisory lock: concurrent runs are safe; later
+  runs wait, then find nothing to do.
+- Privileges: `CREATE` on the database and on the schema. Run from a deploy
+  step with a dedicated role, not the application user.
+- `create` fails if the schema is missing or older than the library.
 
-### Upgrading
+Upgrade order: read [MODEL.md compatibility notes](../MODEL.md#compatibility),
+migrate, deploy. Services sharing a database must run compatible versions
+(e.g. a schema-1 release cannot read `REMOVED` memberships).
 
-1. Read the release notes and the compatibility notes in
-   [MODEL.md](../MODEL.md#compatibility).
-2. Run the new version's migration against the database.
-3. Deploy the new library version.
+## Audit log
 
-**Several services, one database.** When services built with different SDKs
-(or different versions) share a database, upgrade them together: an older
-library may not understand data that only a newer schema allows (for example,
-a release built for schema 1 cannot read a `REMOVED` membership).
-
-## The audit log
-
-Every change to Gatedhouse's tables (catalog, roles, grants, inheritance,
-memberships, groups, group members, group roles) is recorded by a database
-trigger in `gatedhouse.audit_log`, including changes made directly in SQL:
+A trigger on every Gatedhouse table except `audit_log` and `schema_versions`
+records every insert, update and delete, including direct SQL:
 
 | Column | Content |
 |---|---|
-| `id` | sequence number |
+| `id` | sequence |
 | `table_name` | e.g. `gatedhouse.role_assignments` |
-| `op` | `INSERT`, `UPDATE` or `DELETE` |
-| `old_row` | the row before the change, as JSON (`NULL` for inserts) |
-| `new_row` | the row after the change, as JSON (`NULL` for deletes) |
+| `op` | `INSERT`, `UPDATE`, `DELETE` |
+| `old_row`, `new_row` | JSONB; `NULL` for insert / delete respectively |
 | `changed_at` | timestamp |
-| `changed_by` | the actor, if one was set (see below) |
-
-Revoked grants are deleted from the live tables; their history lives here.
+| `changed_by` | value of setting `gatedhouse.actor`, else `NULL` |
 
 ```sql
--- Who had which roles in acme, and when did that change?
-SELECT op, coalesce(new_row, old_row) AS assignment, changed_at, changed_by
+SELECT op, coalesce(new_row, old_row)->>'role_key' AS role, changed_at, changed_by
 FROM gatedhouse.audit_log
 WHERE table_name = 'gatedhouse.role_assignments'
   AND coalesce(new_row, old_row)->>'org_id' = 'acme'
 ORDER BY changed_at;
-
--- Everything that happened to alice's membership in acme
-SELECT op, old_row->>'status' AS before, new_row->>'status' AS after, changed_at
-FROM gatedhouse.audit_log
-WHERE table_name = 'gatedhouse.memberships'
-  AND coalesce(new_row, old_row)->>'identity_id' = 'alice'
-  AND coalesce(new_row, old_row)->>'org_id' = 'acme'
-ORDER BY changed_at;
 ```
 
-### Who made the change
+Actor attribution: library writes run in their own transactions, so the actor
+cannot be set per request (planned, issue #9). A per-role default works:
+`ALTER ROLE billing_service SET gatedhouse.actor = 'billing-service'`. Direct
+SQL can use `SET LOCAL gatedhouse.actor = '...'`.
 
-The trigger fills `changed_by` from the PostgreSQL setting `gatedhouse.actor`.
-Gatedhouse runs each change in its own transaction on a connection your code
-doesn't see, so **you cannot currently set the actor per request** through the
-library; per-request attribution is planned. What works today is a default
-per database role, which attributes changes to the service that made them:
-
-```sql
-ALTER ROLE billing_service SET gatedhouse.actor = 'billing-service';
-```
-
-Record the human actor in your own application log alongside the change.
-
-### What the audit log is not
-
-It records **changes**, not **decisions**: permission checks are not logged.
-If you need a record of every allow/deny, log it in your application at
-decision time; that volume belongs in a log pipeline, not a database table.
-
-The table grows with every change. Plan retention (periodic archiving or
-partitioning) according to your compliance requirements.
+Permission checks are not logged; log decisions in the application if
+required. The table only grows; plan archiving or partitioning.
 
 ## Production checklist
 
-- [ ] Schema migrated as a deploy step, with a dedicated migration user.
-- [ ] Gatedhouse uses your application's connection pool
-      ([chapter 3](03-connecting.md)), and the pool is sized for permission
-      checks too.
-- [ ] A statement timeout is set on that pool or the database role.
-- [ ] One Gatedhouse instance per process, shared by all threads.
-- [ ] Caching decided deliberately: off, or a TTL you accept for revoked
-      permissions in a multi-instance deployment ([chapter 9](09-caching.md)).
-- [ ] `UNAVAILABLE` database errors and `JWKS_UNAVAILABLE` map to `503`, and
-      nothing treats an error as "allowed" ([chapter 12](12-errors.md)).
-- [ ] Token verifier configured with the right issuer and audience, and the
-      JWKS URI reachable from production.
-- [ ] Roles named after capabilities; per-org titles are groups
-      ([chapter 2](02-concepts.md)).
-- [ ] Holders of `gatedhouse:owner` and wildcard roles reviewed.
-- [ ] Every service sharing the database runs a compatible library version.
+- Migrations run as a deploy step with a dedicated role.
+- Gatedhouse uses the application's pool, sized for checks; statement timeout
+  set on the pool or role.
+- One shared instance per process.
+- Cache off, or TTL chosen as the tolerated revocation delay.
+- `UNAVAILABLE` and `JWKS_UNAVAILABLE` → 503; no error path allows access.
+- Token verifier issuer/audience correct; JWKS reachable.
+- `hasPermission` called only with authenticated identities.
+- Holders of `gatedhouse:owner` and wildcard roles reviewed.
+- All services sharing the database on compatible versions.
 
 ## Monitoring
 
-| Signal | Where | Watch for |
-|---|---|---|
-| database errors by kind | your error handling | spikes of `UNAVAILABLE` (pool exhaustion, database trouble, slow queries) |
-| pool metrics | your pool (HikariCP MXBeans, `psycopg_pool` `get_stats()`, `r2d2` `state()`) | waiting threads, connections near the maximum |
-| cache counters | `InMemoryPermissionCache` hit/miss/eviction counts | low hit rate (TTL too short), constant evictions (bound too small) |
-| token failures by reason | your filter or error handling | `JWKS_UNAVAILABLE` (identity provider trouble), bursts of `UNKNOWN_KEY` or `INVALID_SIGNATURE` (forged tokens) |
-| audit log growth | `gatedhouse.audit_log` | unexpected bulk changes |
+Gatedhouse does not log; it reports through return values and errors.
 
-Gatedhouse itself doesn't log; it reports through return values and
-exceptions, so your application decides what to record.
+| Signal | Source | Indicates |
+|---|---|---|
+| `UNAVAILABLE` rate | error handling | pool exhaustion, database trouble, slow queries |
+| pool waiters / active connections | HikariCP MXBean, `psycopg_pool.get_stats()`, `r2d2` `state()` | undersized pool |
+| cache hits, misses, evictions | `InMemoryPermissionCache` counters | TTL or bound mis-sized |
+| `JWKS_UNAVAILABLE` | verification errors | IdP unreachable |
+| `UNKNOWN_KEY`, `INVALID_SIGNATURE` bursts | verification errors | forged tokens |
 
 ## Testing
 
-**Against a real database.** The behaviour that matters (inheritance,
-wildcards, membership states) lives in SQL, so test against PostgreSQL rather
-than a mock. A disposable database per test run works well; run the migration
-first.
+Test against PostgreSQL (evaluation is in SQL). `explainPermission` lets
+tests assert the granting path, not only the outcome.
 
-**Smoke test.** Each SDK has an end-to-end smoke test (122 checks covering the
-catalog, roles, inheritance, wildcards, groups, the membership lifecycle,
-explanations and caching). It creates and deletes `smoketest`-prefixed
-fixtures, so it is a development tool and is not shipped in the packages. Run
-it from a checkout against a development database:
+Smoke test (122 checks; creates and deletes `smoketest*` fixtures; not
+shipped in packages), from each SDK directory:
 
-| SDK | Command, from the SDK's directory |
+| SDK | Command |
 |---|---|
-| Java | `mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt`, then `java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <password>` |
+| Java | `mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt` then `java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <password>` |
 | Python | `python tests/smoke_test.py "<conninfo>"` (needs `gatedhouse[pool]`) |
 | Rust | `cargo run --features r2d2 --example smoke_test -- "<conninfo>"` |
 
-**The library's own test suites** need a database URL to run their database
-tests: `GATEDHOUSE_TEST_JDBC_URL` (Java, a JDBC URL with credentials) or
-`GATEDHOUSE_TEST_DATABASE_URL` (Python and Rust); CI runs all of them against
-PostgreSQL 16.
-
-**In your tests**, `explainPermission` makes assertions readable: assert the
-outcome *and* the path you expect, so a test fails if access starts arriving
-by an unintended route.
+Library test suites read `GATEDHOUSE_TEST_JDBC_URL` (Java) or
+`GATEDHOUSE_TEST_DATABASE_URL` (Python, Rust).

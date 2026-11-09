@@ -1,154 +1,71 @@
 # 9. Caching
 
-Caching is **off by default**: every check queries the database. Turn it on
-to answer repeated checks for the same identity and org from memory.
-
-## How it works
-
-The cache stores, per `(identity, org)`, the identity's complete list of
-effective grants in that org. The first check fills the entry with one
-query; later checks for that identity and org, for **any** permission, are
-answered from the entry until it expires or is invalidated.
-`hasPermission` and `getEffectivePermissions` use the cache;
-`explainPermission` always reads the database.
-
-## Turning it on
+Off by default. When configured, the cache stores per `(identity, org)` the
+full list of effective grants; `hasPermission` and `getEffectivePermissions`
+read it, `explainPermission` never does.
 
 ```java
-GatedhouseConfig config = GatedhouseConfig.builder()
-    .database(db)
-    .permissionCache(new InMemoryPermissionCache())                    // 60 s, 10,000 entries
-    .build();
+GatedhouseConfig.builder().database(db).permissionCache(new InMemoryPermissionCache()).build();
 ```
-
 ```python
-config = GatedhouseConfig(database=db, permission_cache=InMemoryPermissionCache())
+GatedhouseConfig(database=db, permission_cache=InMemoryPermissionCache())
 ```
-
 ```rust
-let config = GatedhouseConfig::builder(db)
-    .permission_cache(Arc::new(InMemoryPermissionCache::new()))
-    .build();
+GatedhouseConfig::builder(db).permission_cache(Arc::new(InMemoryPermissionCache::new())).build()
 ```
 
-## The in-memory cache
+## InMemoryPermissionCache
 
-`InMemoryPermissionCache` lives inside your process, is safe for concurrent
-use, and has two settings:
+| Setting | Default | Java | Python | Rust |
+|---|---|---|---|---|
+| TTL | 60 s | `new InMemoryPermissionCache(ttl)` | `InMemoryPermissionCache(ttl)` | `with_ttl(ttl)` |
+| max entries | 10,000 | `new InMemoryPermissionCache(ttl, max)` | `InMemoryPermissionCache(ttl, max_entries=max)` | `with_ttl_and_max_entries(ttl, max)` |
 
-| Setting | Default | Meaning |
-|---|---|---|
-| time to live | 60 s | how long an entry is used before it is reloaded |
-| maximum entries | 10,000 | `(identity, org)` pairs held at once |
+At the bound, expired entries are swept; if still full, a tenth is evicted
+(oldest first in Python and Rust, arbitrary in Java). Counters: `hitCount`,
+`missCount`, `putCount`, `targetedInvalidationCount`,
+`wholesaleInvalidationCount`, `evictionCount`, `size`, `resetStats`.
 
-```java
-new InMemoryPermissionCache(Duration.ofSeconds(30), 50_000);
-```
+## Invalidation (automatic, same process only)
 
-```python
-InMemoryPermissionCache(timedelta(seconds=30), max_entries=50_000)
-```
-
-```rust
-InMemoryPermissionCache::with_ttl_and_max_entries(Duration::from_secs(30), 50_000)
-```
-
-When the cache is full, expired entries are swept first; if it is still full,
-the oldest tenth is evicted (Java evicts an arbitrary tenth). The bound
-matters because the org of a check usually comes from the request: without it,
-requests naming many different orgs could grow the cache without limit.
-
-It also exposes counters for monitoring: `hitCount`, `missCount`, `putCount`,
-`targetedInvalidationCount`, `wholesaleInvalidationCount`, `evictionCount`,
-`size` (snake_case in Python and Rust), and `resetStats`.
-
-## Automatic invalidation
-
-Every change made through Gatedhouse clears the affected entries **in the
-same process**:
-
-| Change | Cleared |
+| Change | Invalidates |
 |---|---|
-| membership create, remove, status change | that identity in that org |
-| direct role assignment or revocation | that identity in that org |
-| adding or removing a group member | that identity in that org |
-| grants, inheritance, group roles, deleting a role or group, removing catalog entries | everything |
+| membership create / remove / status | `(identity, org)` |
+| direct role assignment / revocation | `(identity, org)` |
+| group member add / remove | `(identity, org)` |
+| grants, inheritance, group roles, role or group deletion, catalog removal | all entries |
 
-The broad clears look expensive, but those changes are rare. The frequent
-changes (one person's access) clear one entry.
+Changes made by other processes or by direct SQL are not seen until the
+entry expires. Also within one process, a check that loads an entry while a
+change commits can cache the pre-change result until expiry. Choose the TTL
+as the maximum tolerated delay for a revocation to take effect.
 
-## Several processes: what to know
+| Multi-process option | Staleness |
+|---|---|
+| short TTL | ≤ TTL |
+| shared cache (custom `PermissionCache` over Redis/Memcached; Java: `JCachePermissionCache` wrapping any JSR 107 provider) | none across processes |
+| broadcast changes (e.g. `LISTEN`/`NOTIFY`) and call `invalidateCache` / `invalidateAllCache` | near real time |
+| no cache | none |
 
-The in-memory cache is **per process**. If several processes use the same
-database (several instances behind a load balancer, or a Java and a Python
-service), a change made in one clears only that process's cache; the others
-keep their entry until it expires. For up to the time to live, they may
-answer with the old permissions. The same applies to changes made directly
-in SQL.
+## Custom PermissionCache
 
-Choose a strategy:
-
-| Strategy | How | Staleness |
-|---|---|---|
-| Short time to live | e.g. 5 s | up to the TTL |
-| Shared cache | implement `PermissionCache` over Redis or Memcached, or in Java wrap any JCache provider with `JCachePermissionCache` | none between processes |
-| Broadcast invalidation | publish changes (PostgreSQL `LISTEN`/`NOTIFY`, a message bus) and call `invalidateCache` / `invalidateAllCache` on receipt | near real time |
-| No cache | the default | none |
-
-Pick the time to live from your tolerance for a revoked permission still
-working briefly. For sensitive permissions (refunds, admin actions) a short
-TTL or no cache is reasonable; the check without a cache is a single indexed
-query.
-
-There is also a narrow window **within one process**: if a check is loading
-an entry at the very moment a change commits, it can store the answer from
-just before the change, which then lives until the TTL. Size the TTL with
-this in mind too.
-
-## A shared cache
-
-Java ships an adapter for any JSR 107 (JCache) provider: Ehcache, Hazelcast,
-Redisson (Redis), Infinispan, Caffeine's JCache module.
+Methods: `get(identity, org)`, `put(identity, org, permissions)`,
+`invalidate(identity, org)`, `invalidateAll()`. Must be thread-safe.
+Exceptions from `get`/`put` fail the check, so a networked implementation
+should return "absent" and ignore failed writes when its backend is down.
 
 ```java
-CacheManager manager = Caching.getCachingProvider().getCacheManager();
-MutableConfiguration<PermissionCacheKey, List<EffectivePermission>> cfg =
+Cache<PermissionCacheKey, List<EffectivePermission>> jcache = cacheManager.createCache("gatedhouse",
     new MutableConfiguration<PermissionCacheKey, List<EffectivePermission>>()
-        .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(
-            new javax.cache.expiry.Duration(TimeUnit.SECONDS, 60)));
-Cache<PermissionCacheKey, List<EffectivePermission>> jcache =
-    manager.createCache("gatedhouse-permissions", cfg);
-
-GatedhouseConfig.builder().database(db)
-    .permissionCache(new JCachePermissionCache(jcache))
-    .build();
+        .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(new javax.cache.expiry.Duration(SECONDS, 60))));
+GatedhouseConfig.builder().database(db).permissionCache(new JCachePermissionCache(jcache)).build();
 ```
 
-In any SDK you can implement the four-method `PermissionCache` interface
-yourself:
+## Runtime control
 
-| Method | Called when |
+| Java | Effect |
 |---|---|
-| `get(identity, org)` | before a check; return the stored list or nothing |
-| `put(identity, org, permissions)` | after a miss was loaded from the database |
-| `invalidate(identity, org)` | after a change to that identity in that org |
-| `invalidateAll()` | after a change that may affect many identities |
-
-Implementations must be thread-safe, and must not fail checks when the cache
-backend is down: return "nothing" from `get` and ignore failed `put`s, so
-Gatedhouse falls back to the database.
-
-## Manual control
-
-```java
-gh.invalidateCache("alice", "acme");   // after changing data outside Gatedhouse
-gh.invalidateAllCache();
-gh.setCacheEnabled(false);             // emergency switch: bypass the cache
-gh.setCacheEnabled(true);              // resume; the cache starts cold
-gh.isCacheEnabled();
-```
-
-Python and Rust use the snake_case names. While disabled, checks skip the
-cache entirely, but changes still invalidate it, so it is consistent when
-turned back on. With no cache configured, `isCacheEnabled()` is `false` and
-enabling does nothing.
+| `invalidateCache(id, org)`, `invalidateAllCache()` | manual invalidation, e.g. after direct SQL |
+| `setCacheEnabled(false)` | bypass the cache; changes still invalidate it |
+| `setCacheEnabled(true)` | resume (cache starts cold); no-op without a configured cache |
+| `isCacheEnabled()` | `false` when no cache is configured |
