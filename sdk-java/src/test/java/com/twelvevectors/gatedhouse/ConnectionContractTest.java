@@ -192,6 +192,25 @@ class ConnectionContractTest {
     }
 
     @Test
+    void ownedPoolBoundsStatementsAndATimeoutIsUnavailable() throws Exception {
+        PooledDatabase.Settings settings = PooledDatabase.Settings.builder()
+            .statementTimeout(Duration.ofMillis(300)).build();
+        try (PooledDatabase pool = Database.fromUrl(URL, null, null, settings);
+             Connection c = pool.getConnection()) {
+            try (ResultSet rs = c.createStatement().executeQuery("SHOW statement_timeout")) {
+                rs.next();
+                assertEquals("300ms", rs.getString(1));
+            }
+            SQLException slow = assertThrows(SQLException.class,
+                () -> c.createStatement().execute("SELECT pg_sleep(2)"));
+            assertEquals("57014", slow.getSQLState());
+            assertEquals(GatedhouseDatabaseException.Kind.UNAVAILABLE,
+                GatedhouseDatabaseException.classify("x", slow).kind());
+        }
+        assertEquals(Duration.ofSeconds(30), PooledDatabase.Settings.defaults().statementTimeout());
+    }
+
+    @Test
     void unreachableDatabaseFailsStartupAsUnavailable() {
         PooledDatabase.Settings quick = PooledDatabase.Settings.builder()
             .connectionTimeout(Duration.ofMillis(300)).build();

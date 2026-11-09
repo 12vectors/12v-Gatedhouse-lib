@@ -17,6 +17,8 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -63,18 +65,36 @@ class GatedhouseApiFilterTest {
                         yield null;
                     }
                     case "getWriter" -> writer;
+                    case "isCommitted" -> false;
                     default -> null;
                 });
     }
 
     private static Gatedhouse rejectingGatedhouse() {
+        return verifyingWith(TokenVerificationException.Reason.INVALID_SIGNATURE,
+            "bad signature from \"kid\": <script>");
+    }
+
+    private static Gatedhouse verifyingWith(TokenVerificationException.Reason reason, String message) {
         return (Gatedhouse) Proxy.newProxyInstance(
                 GatedhouseApiFilterTest.class.getClassLoader(),
                 new Class<?>[] {Gatedhouse.class},
                 (proxy, method, args) -> {
                     if ("verifyToken".equals(method.getName())) {
-                        throw new TokenVerificationException(
-                                TokenVerificationException.Reason.INVALID_SIGNATURE, "bad signature");
+                        throw new TokenVerificationException(reason, message);
+                    }
+                    return null;
+                });
+    }
+
+    private static Gatedhouse accepting() {
+        return (Gatedhouse) Proxy.newProxyInstance(
+                GatedhouseApiFilterTest.class.getClassLoader(),
+                new Class<?>[] {Gatedhouse.class},
+                (proxy, method, args) -> {
+                    if ("verifyToken".equals(method.getName())) {
+                        return new AuthenticatedSubject(
+                                "person-1", "iss", "aud", null, null, "Bearer", Map.of());
                     }
                     return null;
                 });
@@ -86,13 +106,17 @@ class GatedhouseApiFilterTest {
         };
     }
 
+    private static void assertSecurityHeaders(ResponseCapture resp) {
+        assertEquals("nosniff", resp.headers.get("X-Content-Type-Options"));
+        assertEquals("DENY", resp.headers.get("X-Frame-Options"));
+        assertEquals("strict-origin-when-cross-origin", resp.headers.get("Referrer-Policy"));
+    }
+
     private static void assertUnauthorizedContract(ResponseCapture resp) {
         assertEquals(401, resp.status);
         assertEquals("Bearer", resp.headers.get("WWW-Authenticate"));
         assertEquals(GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE, resp.headers.get("WWW-Authenticate"));
-        assertEquals("nosniff", resp.headers.get("X-Content-Type-Options"));
-        assertEquals("DENY", resp.headers.get("X-Frame-Options"));
-        assertEquals("strict-origin-when-cross-origin", resp.headers.get("Referrer-Policy"));
+        assertSecurityHeaders(resp);
         assertEquals("application/json", resp.contentType);
     }
 
@@ -103,43 +127,98 @@ class GatedhouseApiFilterTest {
                 .doFilter(fakeRequest(null), fakeResponse(resp), unreachableChain());
 
         assertUnauthorizedContract(resp);
-        assertEquals("{\"error\":\"unauthorized\",\"detail\":\"Missing or invalid Bearer token\"}",
-                resp.body.toString());
+        assertEquals("{\"error\":\"unauthorized\",\"reason\":\"missing_token\","
+                + "\"detail\":\"Missing or invalid Bearer token\"}", resp.body.toString());
     }
 
     @Test
-    void invalidTokenGets401WithChallenge() throws Exception {
+    void invalidTokenGets401WithAStableReasonAndNoInternalDetail() throws Exception {
         ResponseCapture resp = new ResponseCapture();
         new GatedhouseApiFilter(rejectingGatedhouse())
                 .doFilter(fakeRequest("Bearer not-a-real-token"), fakeResponse(resp), unreachableChain());
 
         assertUnauthorizedContract(resp);
-        assertTrue(resp.body.toString()
-                        .startsWith("{\"error\":\"unauthorized\",\"detail\":\"Token verification failed:"),
-                "body was: " + resp.body);
+        assertEquals("{\"error\":\"unauthorized\",\"reason\":\"invalid_signature\","
+                + "\"detail\":\"Token verification failed\"}", resp.body.toString());
+    }
+
+    @Test
+    void identityProviderOutageIs503NotA401() throws Exception {
+        ResponseCapture resp = new ResponseCapture();
+        new GatedhouseApiFilter(verifyingWith(TokenVerificationException.Reason.JWKS_UNAVAILABLE,
+                "Couldn't retrieve JWKS from https://idp.internal:8443/jwks: connect timed out"))
+                .doFilter(fakeRequest("Bearer t"), fakeResponse(resp), unreachableChain());
+
+        assertEquals(503, resp.status);
+        assertEquals("30", resp.headers.get("Retry-After"));
+        assertNull(resp.headers.get("WWW-Authenticate"), "no challenge: the token is not at fault");
+        assertSecurityHeaders(resp);
+        assertEquals("{\"error\":\"unavailable\",\"reason\":\"jwks_unavailable\","
+                + "\"detail\":\"Token verification is temporarily unavailable\"}", resp.body.toString());
+    }
+
+    @Test
+    void bearerSchemeIsCaseInsensitive() throws Exception {
+        for (String header : new String[] {"bearer good", "BEARER good", "Bearer   good  "}) {
+            boolean[] chained = {false};
+            new GatedhouseApiFilter(accepting())
+                .doFilter(fakeRequest(header), fakeResponse(new ResponseCapture()),
+                    (rq, rs) -> chained[0] = true);
+            assertTrue(chained[0], header);
+        }
+        ResponseCapture resp = new ResponseCapture();
+        new GatedhouseApiFilter(accepting())
+            .doFilter(fakeRequest("Bearer    "), fakeResponse(resp), unreachableChain());
+        assertEquals(401, resp.status, "empty token");
     }
 
     @Test
     void validTokenPassesThroughWithoutChallenge() throws Exception {
-        Gatedhouse accepting = (Gatedhouse) Proxy.newProxyInstance(
-                GatedhouseApiFilterTest.class.getClassLoader(),
-                new Class<?>[] {Gatedhouse.class},
-                (proxy, method, args) -> {
-                    if ("verifyToken".equals(method.getName())) {
-                        return new AuthenticatedSubject(
-                                "person-1", "iss", "aud", null, null, "Bearer", Map.of());
-                    }
-                    return null;
-                });
         ResponseCapture resp = new ResponseCapture();
         boolean[] chained = {false};
         FilterChain chain = (request, response) -> chained[0] = true;
 
-        new GatedhouseApiFilter(accepting)
+        new GatedhouseApiFilter(accepting())
                 .doFilter(fakeRequest("Bearer good-token"), fakeResponse(resp), chain);
 
         assertTrue(chained[0], "authenticated request must continue down the chain");
         assertNull(resp.headers.get("WWW-Authenticate"), "no challenge on success");
         assertEquals("", resp.body.toString(), "no error body on success");
+    }
+
+    @Test
+    void applicationFailuresPropagateInsteadOfBecoming401s() {
+        IllegalStateException appBug = new IllegalStateException("database down");
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () ->
+            new GatedhouseApiFilter(accepting()).doFilter(fakeRequest("Bearer good"),
+                fakeResponse(new ResponseCapture()), (rq, rs) -> { throw appBug; }));
+        assertSame(appBug, thrown);
+    }
+
+    @Test
+    void helperExceptionsFromTheApplicationKeepTheirStatus() throws Exception {
+        ResponseCapture forbidden = new ResponseCapture();
+        new GatedhouseApiFilter(accepting()).doFilter(fakeRequest("Bearer good"),
+            fakeResponse(forbidden), (rq, rs) -> {
+                throw new GatedhouseApiFilter.ForbiddenException("Admin access required");
+            });
+        assertEquals(403, forbidden.status);
+        assertNull(forbidden.headers.get("WWW-Authenticate"));
+        assertEquals("{\"error\":\"forbidden\",\"detail\":\"Admin access required\"}",
+            forbidden.body.toString());
+
+        ResponseCapture unauthorized = new ResponseCapture();
+        new GatedhouseApiFilter(accepting()).doFilter(fakeRequest("Bearer good"),
+            fakeResponse(unauthorized), (rq, rs) -> {
+                throw new GatedhouseApiFilter.UnauthorizedException("Authentication required");
+            });
+        assertUnauthorizedContract(unauthorized);
+    }
+
+    @Test
+    void jsonBodiesAreEscaped() {
+        StringBuilder out = new StringBuilder();
+        FilterSupport.appendJsonString(out, "a\"b\\c\n\u0001\u2028");
+        assertEquals("\"a\\\"b\\\\c\\n\\u0001\\u2028\"", out.toString());
     }
 }

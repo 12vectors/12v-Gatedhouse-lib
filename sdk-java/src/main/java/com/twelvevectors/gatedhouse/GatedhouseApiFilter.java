@@ -17,8 +17,12 @@ import java.io.IOException;
 
 /**
  * API Security Filter that enforces standard Authorization Bearer token validation.
- * On failure, returns a clean 401 JSON response carrying the RFC 6750
- * {@code WWW-Authenticate: Bearer} challenge header.
+ * A missing or invalid token gets a 401 JSON response carrying the RFC 6750
+ * {@code WWW-Authenticate: Bearer} challenge and a stable {@code reason} code;
+ * an identity-provider outage gets a 503 with {@code Retry-After}.
+ * {@link ForbiddenException} / {@link UnauthorizedException} thrown by the
+ * application (via {@link #requireAdmin} etc.) become 403 / 401; every other
+ * application exception propagates unchanged.
  */
 public final class GatedhouseApiFilter implements Filter {
 
@@ -64,27 +68,47 @@ public final class GatedhouseApiFilter implements Filter {
         var req = (HttpServletRequest) request;
         var resp = (HttpServletResponse) response;
 
-        // Apply robust security headers
-        resp.setHeader("X-Content-Type-Options", "nosniff");
-        resp.setHeader("X-Frame-Options", "DENY");
-        resp.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        FilterSupport.applySecurityHeaders(resp);
 
-        String auth = req.getHeader("Authorization");
-        if (auth == null || !auth.startsWith("Bearer ")) {
-            sendJsonError(resp, 401, "unauthorized", "Missing or invalid Bearer token");
+        String token = FilterSupport.bearerToken(req.getHeader("Authorization"));
+        if (token == null) {
+            FilterSupport.sendUnauthorized(resp, "missing_token", "Missing or invalid Bearer token");
             return;
         }
 
-        String token = auth.substring(7).trim();
+        // Only verification is guarded here. Any other exception from
+        // verifyToken (e.g. no token verifier configured) is a server fault
+        // and propagates to the container as a 500, never a 401.
+        AuthenticatedSubject subject;
         try {
-            AuthenticatedSubject subject = gatedhouse.verifyToken(token);
-            GatedContext ctx = GatedContext.fromSubject(subject);
-            req.setAttribute(CONTEXT_ATTR, ctx);
-            chain.doFilter(request, response);
+            subject = gatedhouse.verifyToken(token);
         } catch (TokenVerificationException e) {
-            sendJsonError(resp, 401, "unauthorized", "Token verification failed: " + e.getMessage());
-        } catch (Exception e) {
-            sendJsonError(resp, 401, "unauthorized", "Authentication failed");
+            if (FilterSupport.isOutage(e)) {
+                FilterSupport.sendUnavailable(resp);
+            } else {
+                FilterSupport.sendUnauthorized(
+                    resp, FilterSupport.reasonCode(e.reason()), "Token verification failed");
+            }
+            return;
+        }
+        req.setAttribute(CONTEXT_ATTR, GatedContext.fromSubject(subject));
+
+        // The application runs outside the verification guard: its failures
+        // keep their own status. Only this filter's helper exceptions
+        // (requireAdmin, requireScope, ...) are translated, and only while
+        // the response can still be changed.
+        try {
+            chain.doFilter(request, response);
+        } catch (ForbiddenException e) {
+            if (resp.isCommitted()) {
+                throw e;
+            }
+            FilterSupport.sendForbidden(resp, e.getMessage());
+        } catch (UnauthorizedException e) {
+            if (resp.isCommitted()) {
+                throw e;
+            }
+            FilterSupport.sendUnauthorized(resp, null, e.getMessage());
         }
     }
 
@@ -133,18 +157,6 @@ public final class GatedhouseApiFilter implements Filter {
             throw new ForbiddenException("Scope '" + scope + "' required");
         }
         return ctx;
-    }
-
-    private static void sendJsonError(HttpServletResponse resp, int status, String error, String detail)
-            throws IOException {
-        resp.setStatus(status);
-        // RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
-        if (status == 401) {
-            resp.setHeader("WWW-Authenticate", WWW_AUTHENTICATE_CHALLENGE);
-        }
-        resp.setContentType("application/json");
-        resp.setCharacterEncoding("UTF-8");
-        resp.getWriter().write("{\"error\":\"" + error + "\",\"detail\":\"" + detail + "\"}");
     }
 
     public static class ForbiddenException extends RuntimeException {

@@ -47,17 +47,20 @@ public final class GatedhouseDatabaseException extends RuntimeException {
     }
 
     /**
-     * Classifies a failure from an operation that did obtain a connection:
-     * SQLSTATE class 08 (connection exception) and 57P01–57P03 (server shut
-     * down or not accepting connections) mean the database went away;
-     * anything else is the statement failing.
+     * Classifies a failure from an operation that did obtain a connection.
+     * Transient conditions are {@link Kind#UNAVAILABLE}: SQLSTATE class 08
+     * (connection exception), class 53 (insufficient resources), 57014
+     * (statement timeout or cancellation) and 57P01-57P03 (server shut down
+     * or not accepting connections). Anything else is the statement failing.
      */
     static GatedhouseDatabaseException classify(String message, SQLException cause) {
-        String state = cause.getSQLState();
-        boolean unavailable = state != null
-            && (state.startsWith("08") || state.equals("57P01")
-                || state.equals("57P02") || state.equals("57P03"));
         return new GatedhouseDatabaseException(
-            unavailable ? Kind.UNAVAILABLE : Kind.QUERY, message, cause);
+            isTransient(cause.getSQLState()) ? Kind.UNAVAILABLE : Kind.QUERY, message, cause);
+    }
+
+    static boolean isTransient(String state) {
+        return state != null
+            && (state.startsWith("08") || state.startsWith("53") || state.equals("57014")
+                || state.equals("57P01") || state.equals("57P02") || state.equals("57P03"));
     }
 }

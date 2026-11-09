@@ -16,8 +16,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Default {@link PermissionCache}: a thread-safe, in-process,
- * TTL-expiring map. Backed by {@link ConcurrentHashMap}; lazy eviction
- * on read. Suitable for a single-instance application; for multiple
+ * TTL-expiring map, bounded to {@link #maxEntries()} entries. Backed by
+ * {@link ConcurrentHashMap}. Expired entries are dropped when read, and swept
+ * whenever the cache reaches its bound; if it is still full of live entries,
+ * an arbitrary tenth is evicted. The bound matters because the org ID of a
+ * check often comes from the request, so callers could otherwise grow the
+ * cache without limit. Suitable for a single-instance application; for multiple
  * application instances that need a coherent shared view of cached
  * permissions, plug in a network cache (Memcached, Redis, etc.) by
  * implementing {@link PermissionCache} directly.
@@ -33,7 +37,11 @@ public final class InMemoryPermissionCache implements PermissionCache {
      *  out-of-band schema edit short. */
     public static final Duration DEFAULT_TTL = Duration.ofSeconds(60);
 
+    /** Default bound on cached (identity, org) entries. */
+    public static final int DEFAULT_MAX_ENTRIES = 10_000;
+
     private final Duration ttl;
+    private final int maxEntries;
     private final Clock clock;
     private final ConcurrentMap<Key, Entry> entries = new ConcurrentHashMap<>();
 
@@ -42,18 +50,39 @@ public final class InMemoryPermissionCache implements PermissionCache {
     private final AtomicLong puts   = new AtomicLong();
     private final AtomicLong targetedInvalidations  = new AtomicLong();
     private final AtomicLong wholesaleInvalidations = new AtomicLong();
+    private final AtomicLong evictions = new AtomicLong();
 
     public InMemoryPermissionCache() {
-        this(DEFAULT_TTL, Clock.systemUTC());
+        this(DEFAULT_TTL, DEFAULT_MAX_ENTRIES, Clock.systemUTC());
     }
 
     public InMemoryPermissionCache(Duration ttl) {
-        this(ttl, Clock.systemUTC());
+        this(ttl, DEFAULT_MAX_ENTRIES, Clock.systemUTC());
+    }
+
+    /**
+     * @param maxEntries most (identity, org) entries held at once; at least 1
+     */
+    public InMemoryPermissionCache(Duration ttl, int maxEntries) {
+        this(ttl, maxEntries, Clock.systemUTC());
     }
 
     InMemoryPermissionCache(Duration ttl, Clock clock) {
+        this(ttl, DEFAULT_MAX_ENTRIES, clock);
+    }
+
+    InMemoryPermissionCache(Duration ttl, int maxEntries, Clock clock) {
         this.ttl = Objects.requireNonNull(ttl, "ttl");
+        if (maxEntries < 1) {
+            throw new IllegalArgumentException("maxEntries must be at least 1");
+        }
+        this.maxEntries = maxEntries;
         this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /** Most (identity, org) entries held at once. */
+    public int maxEntries() {
+        return maxEntries;
     }
 
     @Override
@@ -75,9 +104,14 @@ public final class InMemoryPermissionCache implements PermissionCache {
 
     @Override
     public void put(String identityId, String orgId, List<EffectivePermission> permissions) {
-        Instant expiresAt = clock.instant().plus(ttl);
+        Instant now = clock.instant();
+        Key key = new Key(identityId, orgId);
+        if (entries.size() >= maxEntries && !entries.containsKey(key)) {
+            makeRoom(now);
+        }
+        Instant expiresAt = now.plus(ttl);
         entries.put(
-            new Key(identityId, orgId),
+            key,
             new Entry(List.copyOf(permissions), expiresAt));
         puts.incrementAndGet();
     }
@@ -93,6 +127,19 @@ public final class InMemoryPermissionCache implements PermissionCache {
     public void invalidateAll() {
         entries.clear();
         wholesaleInvalidations.incrementAndGet();
+    }
+
+    /** Drops expired entries; if still full, evicts an arbitrary tenth. */
+    private void makeRoom(Instant now) {
+        int before = entries.size();
+        entries.values().removeIf(e -> now.isAfter(e.expiresAt));
+        int toEvict = entries.size() - maxEntries + Math.max(1, maxEntries / 10);
+        var it = entries.keySet().iterator();
+        while (toEvict-- > 0 && it.hasNext()) {
+            it.next();
+            it.remove();
+        }
+        evictions.addAndGet(Math.max(0, before - entries.size()));
     }
 
     // ---- observability ----------------------------------------------------
@@ -122,6 +169,11 @@ public final class InMemoryPermissionCache implements PermissionCache {
         return wholesaleInvalidations.get();
     }
 
+    /** Cumulative entries removed to stay within {@link #maxEntries()}. */
+    public long evictionCount() {
+        return evictions.get();
+    }
+
     /** Current number of entries in the cache (including expired-but-not-yet-evicted). */
     public int size() {
         return entries.size();
@@ -137,6 +189,7 @@ public final class InMemoryPermissionCache implements PermissionCache {
         puts.set(0);
         targetedInvalidations.set(0);
         wholesaleInvalidations.set(0);
+        evictions.set(0);
     }
 
     private record Key(String identityId, String orgId) {

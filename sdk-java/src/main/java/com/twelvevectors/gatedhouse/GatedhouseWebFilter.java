@@ -83,10 +83,7 @@ public final class GatedhouseWebFilter implements Filter {
         var req = (HttpServletRequest) request;
         var resp = (HttpServletResponse) response;
 
-        // Apply robust security headers
-        resp.setHeader("X-Content-Type-Options", "nosniff");
-        resp.setHeader("X-Frame-Options", "DENY");
-        resp.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        FilterSupport.applySecurityHeaders(resp);
 
         String token = null;
         HttpSession session = req.getSession(false);
@@ -99,20 +96,28 @@ public final class GatedhouseWebFilter implements Filter {
             return;
         }
 
+        AuthenticatedSubject subject;
         try {
-            AuthenticatedSubject subject = gatedhouse.verifyToken(token);
-            GatedContext ctx = GatedContext.fromSubject(subject);
-            req.setAttribute(CONTEXT_ATTR, ctx);
-            chain.doFilter(request, response);
+            subject = gatedhouse.verifyToken(token.trim());
         } catch (TokenVerificationException e) {
-            // Token is invalid or expired — remove it from the session and redirect
+            if (FilterSupport.isOutage(e)) {
+                // The identity provider is down: keep the session (the token
+                // may be perfectly valid) and do not bounce the user to a
+                // login page that cannot work either.
+                FilterSupport.sendUnavailable(resp);
+                return;
+            }
+            // Token is invalid or expired: remove it from the session and redirect.
             if (session != null) {
                 session.removeAttribute(sessionTokenAttr);
             }
             performLoginRedirect(req, resp);
-        } catch (Exception e) {
-            performLoginRedirect(req, resp);
+            return;
         }
+        req.setAttribute(CONTEXT_ATTR, GatedContext.fromSubject(subject));
+        // The application runs outside the verification guard: its failures
+        // keep their own status instead of becoming login redirects.
+        chain.doFilter(request, response);
     }
 
     private void performLoginRedirect(HttpServletRequest req, HttpServletResponse resp) throws IOException {

@@ -61,7 +61,9 @@ public final class SmokeTest {
     public static void main(String[] args) {
         if (args.length < 2 || args.length > 3) {
             System.err.println(
-                "Usage: java -cp gatedhouse-<v>.jar:postgresql-<v>.jar:HikariCP-<v>.jar:slf4j-api-<v>.jar \\\n"
+                "Development tool, not shipped in the jar. From sdk-java, after\n"
+                + "mvn test-compile and mvn dependency:build-classpath -Dmdep.outputFile=cp.txt:\n"
+                + "  java -cp target/classes:target/test-classes:$(cat cp.txt) \\\n"
                 + "         com.twelvevectors.gatedhouse.cli.SmokeTest \\\n"
                 + "         <jdbc-url> <user> [password]");
             System.exit(2);

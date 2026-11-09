@@ -35,15 +35,19 @@ public final class PooledDatabase implements Database, AutoCloseable {
         public static final Duration DEFAULT_CONNECTION_TIMEOUT = Duration.ofSeconds(10);
         /** Default {@link #maxLifetime()}: 30 minutes. */
         public static final Duration DEFAULT_MAX_LIFETIME = Duration.ofMinutes(30);
+        /** Default {@link #statementTimeout()}: 30 seconds. */
+        public static final Duration DEFAULT_STATEMENT_TIMEOUT = Duration.ofSeconds(30);
 
         private final int maximumPoolSize;
         private final Duration connectionTimeout;
         private final Duration maxLifetime;
+        private final Duration statementTimeout;
 
         private Settings(Builder b) {
             this.maximumPoolSize = b.maximumPoolSize;
             this.connectionTimeout = b.connectionTimeout;
             this.maxLifetime = b.maxLifetime;
+            this.statementTimeout = b.statementTimeout;
         }
 
         public static Settings defaults() {
@@ -72,10 +76,21 @@ public final class PooledDatabase implements Database, AutoCloseable {
             return maxLifetime;
         }
 
+        /**
+         * Longest any single statement may run before PostgreSQL cancels it
+         * (then {@link GatedhouseDatabaseException.Kind#UNAVAILABLE}), so a
+         * slow or blocked query cannot hold a connection indefinitely. Zero
+         * means no limit. Set on the pool's own sessions only.
+         */
+        public Duration statementTimeout() {
+            return statementTimeout;
+        }
+
         public static final class Builder {
             private int maximumPoolSize = DEFAULT_MAXIMUM_POOL_SIZE;
             private Duration connectionTimeout = DEFAULT_CONNECTION_TIMEOUT;
             private Duration maxLifetime = DEFAULT_MAX_LIFETIME;
+            private Duration statementTimeout = DEFAULT_STATEMENT_TIMEOUT;
 
             private Builder() {}
 
@@ -104,6 +119,16 @@ public final class PooledDatabase implements Database, AutoCloseable {
                     throw new IllegalArgumentException("maxLifetime must be at least 30 seconds");
                 }
                 this.maxLifetime = lifetime;
+                return this;
+            }
+
+            /** Zero means no limit; otherwise at least 1 millisecond. */
+            public Builder statementTimeout(Duration timeout) {
+                Objects.requireNonNull(timeout, "statementTimeout");
+                if (timeout.isNegative()) {
+                    throw new IllegalArgumentException("statementTimeout must not be negative");
+                }
+                this.statementTimeout = timeout;
                 return this;
             }
 

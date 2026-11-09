@@ -30,6 +30,10 @@ final class HikariPool {
         config.setMaximumPoolSize(settings.maximumPoolSize());
         config.setConnectionTimeout(settings.connectionTimeout().toMillis());
         config.setMaxLifetime(settings.maxLifetime().toMillis());
+        // The pool is Gatedhouse's own, so its sessions may carry settings.
+        // Runs once per new connection.
+        config.setConnectionInitSql(
+            "SET statement_timeout = " + settings.statementTimeout().toMillis());
         // Open lazily: creating the pool must not fail just because the
         // database is briefly unreachable; the first operation reports it.
         config.setInitializationFailTimeout(-1);
