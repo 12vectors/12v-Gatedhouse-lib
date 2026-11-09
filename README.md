@@ -56,8 +56,8 @@ try (PooledDatabase database = Database.fromUrl(
 For web applications (REST APIs or browser-facing UIs), Gatedhouse provides built-in Sphinx-compatible servlet integration:
 
 *   **`SphinxClient`**: A lightweight HTTP client wrapper utilizing standard `java.net.http.HttpClient` to coordinate OAuth 2.0 authorization code exchanges, client credentials, token exchanges, token refreshes, and introspections. Every call is bounded by a timeout (default 10 s), and failures throw a typed `SphinxException` whose `kind()` separates timeouts and unreachable IdPs from refused requests.
-*   **`GatedhouseWebFilter`**: A standard `jakarta.servlet.Filter` that protects browser-facing UI pages (e.g., `/dashboard/*`). It reads tokens from the `HttpSession` and redirects unauthorized users' browsers to a local or absolute `loginPath` on failure.
-*   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body on failure, carrying the RFC 6750 challenge header `WWW-Authenticate: Bearer` (exposed as `GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE`).
+*   **`GatedhouseWebFilter`**: A standard `jakarta.servlet.Filter` that protects browser-facing UI pages (e.g., `/dashboard/*`). It reads tokens from the `HttpSession` and redirects unauthorized users' browsers to a local or absolute `loginPath` on failure. If the identity provider is down it answers 503 instead, keeping the session.
+*   **`GatedhouseApiFilter`**: A standard `jakarta.servlet.Filter` that protects REST API endpoints (e.g., `/api/*`). It extracts and validates `Authorization: Bearer <token>` headers and returns a standardized `401 Unauthorized` JSON body with a stable `reason` code on failure, carrying the RFC 6750 challenge header `WWW-Authenticate: Bearer` (exposed as `GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE`). An identity-provider outage is a `503` with `Retry-After`, not a 401. Exceptions from your own code pass through untouched, except the filter's `ForbiddenException` / `UnauthorizedException` (403 / 401).
 *   **`GatedContext`**: A type-safe record representation of a verified token's claims, accessible via `GatedhouseApiFilter.getContext(request)`.
 
 #### Configuration Example
@@ -107,8 +107,8 @@ app.add_middleware(GatedhouseApiFilter, gatedhouse=gh)  # FastAPI / Starlette
 The WSGI components:
 
 *   **`SphinxClient`**: The same OAuth 2.0 helper (code exchange, client credentials, token exchange, refresh, introspection, login URLs) built on stdlib `urllib`, with the same 10 s default timeout (`timeout=`) and a typed `SphinxError`.
-*   **`GatedhouseWebFilter`**: WSGI middleware guarding browser-facing pages. Reads the token from a session mapping the host's session middleware exposes in the environ (`session_environ_key`, default `"gatedhouse.session"`) and 302-redirects to `login_path` on failure.
-*   **`GatedhouseApiFilter`**: WSGI middleware guarding REST endpoints. Validates `Authorization: Bearer <token>` and returns the same `401` JSON body on failure, with the RFC 6750 `WWW-Authenticate: Bearer` challenge header (constant `gatedhouse.WWW_AUTHENTICATE_CHALLENGE`; the ASGI variant emits it too). Helpers `get_context(environ)`, `require_admin`, `require_human`, and `require_scope` mirror the Java statics.
+*   **`GatedhouseWebFilter`**: WSGI middleware guarding browser-facing pages. Reads the token from a session mapping the host's session middleware exposes in the environ (`session_environ_key`, default `"gatedhouse.session"`) and 302-redirects to `login_path` on failure (503, session kept, if the identity provider is down).
+*   **`GatedhouseApiFilter`**: WSGI middleware guarding REST endpoints. Validates `Authorization: Bearer <token>` and returns the same `401` JSON body on failure (and the same `503` on an identity-provider outage), with the RFC 6750 `WWW-Authenticate: Bearer` challenge header (constant `gatedhouse.WWW_AUTHENTICATE_CHALLENGE`; the ASGI variant emits it too). Helpers `get_context(environ)`, `require_admin`, `require_human`, and `require_scope` mirror the Java statics.
 *   **`GatedContext`**: The same type-safe claims view, stamped into the WSGI environ under the same key Java uses for its request attribute.
 *   **`GatedhouseFactory.create_just_token_verifier(TokenVerifierConfig(...))`**: database-free, verify-only instance.
 
@@ -129,8 +129,8 @@ tokens = sphinx.exchange_code(code, "http://localhost:8000/auth/callback")
 Rust has no servlet-like standard interface, so the Rust SDK exposes the same decision logic as framework-agnostic guards you wire into axum/actix/hyper middleware in a few lines:
 
 *   **`SphinxClient`**: The same OAuth 2.0 helper, built on `ureq` (already a dependency), with the same 10 s default timeout (`with_timeout`) and a typed `SphinxError` (`kind`, `status_code`).
-*   **`GatedhouseApiFilter::authenticate(authorization_header)`**: returns the verified `GatedContext` or a `FilterError` carrying the exact 401 status and JSON body the Java filter writes. `require_admin` / `require_human` / `require_scope` return `FilterError::Forbidden` on failure.
-*   **`GatedhouseWebFilter::check(session_token, context_path)`**: returns `WebFilterOutcome::Authenticated(ctx)` or `WebFilterOutcome::RedirectToLogin { location, clear_session_token }` — the same redirect resolution (absolute vs. context-relative login path) and session-eviction semantics.
+*   **`GatedhouseApiFilter::authenticate(authorization_header)`**: returns the verified `GatedContext` or a `FilterError` carrying the exact status (401, or 503 for an identity-provider outage, with `retry_after()`) and JSON body the Java filter writes. `require_admin` / `require_human` / `require_scope` return `FilterError::Forbidden` on failure.
+*   **`GatedhouseWebFilter::check(session_token, context_path)`**: returns `WebFilterOutcome::Authenticated(ctx)`, `WebFilterOutcome::RedirectToLogin { location, clear_session_token }`, or `WebFilterOutcome::Unavailable` (503, keep the session) — the same redirect resolution (absolute vs. context-relative login path) and session-eviction semantics.
 *   **`SECURITY_HEADERS`**: the header set both Java filters apply, for the host to add to every response.
 *   **`WWW_AUTHENTICATE`** + **`FilterError::challenge_header()`**: the RFC 6750 `WWW-Authenticate: Bearer` challenge for the host to add to 401 responses (`Some` for `Unauthorized`, `None` for `Forbidden` — 403s and login redirects stay challenge-free).
 *   **`GatedhouseFactory::create_just_token_verifier(TokenVerifierConfig)`**: database-free, verify-only instance.
@@ -229,13 +229,13 @@ Schema lives in `gatedhouse.*` (separate Postgres schema). Each SDK embeds the s
 
 ## Smoke tests
 
-Every SDK ships an end-to-end smoke test using the same fixture names (`smoketestsvc`, `smoketestalice`, …) and the same scenarios. They're idempotent and self-cleaning — safe to run repeatedly against a real Postgres.
+Every SDK has an end-to-end smoke test using the same fixture names (`smoketestsvc`, `smoketestalice`, …) and the same scenarios. They're idempotent and self-cleaning. They are development tools: they write and delete fixtures in the database they're pointed at, so they are **not shipped** in the jar, wheel or crate. Run them from a checkout, against a development database:
 
-| SDK | Command |
+| SDK | Command (from the SDK directory) |
 |---|---|
-| Java | `java ... com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <pwd>` |
-| Python | `python -m gatedhouse.cli.smoke_test "<conninfo>"` |
-| Rust | `cargo run --bin gatedhouse-smoke-test -- "<conninfo>"` |
+| Java | `mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt`, then `java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <pwd>` |
+| Python | `python tests/smoke_test.py "<conninfo>"` (needs `gatedhouse[pool]`) |
+| Rust | `cargo run --features r2d2 --example smoke_test -- "<conninfo>"` |
 
 ## Where to start
 

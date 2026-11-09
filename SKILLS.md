@@ -318,13 +318,16 @@ Same components in all three SDKs, adapted to each platform's web standard: Java
 | OAuth call timeout (default 10 s; no single network wait exceeds it) | `new SphinxClient(url, id, secret, Duration timeout)` | `SphinxClient(url, id, secret, timeout=10.0)` | `SphinxClient::new(url, id, secret).with_timeout(d)` |
 | OAuth failure (never retried) | `SphinxException` (a `RuntimeException`): `kind()` = `TIMEOUT` / `TRANSPORT` / `HTTP_STATUS` / `INVALID_RESPONSE`, `statusCode()` | `SphinxError` (a `RuntimeError`): `.kind` = `SphinxError.Kind.*`, `.status_code` | `SphinxError { kind: SphinxErrorKind::*, status_code, message }` |
 | JWKS fetch timeout (default 5 s) | `TokenVerifierConfig.builder().jwksTimeout(d)` | `TokenVerifierConfig(..., jwks_timeout=5.0)` | `TokenVerifierConfig::new(..).with_jwks_timeout(d)` |
-| API guard (Bearer → 401 JSON) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) / `gatedhouse.asgi.GatedhouseApiFilter` (ASGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
-| Web guard (session → login redirect) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI) / `gatedhouse.asgi.GatedhouseWebFilter` (ASGI, reads `scope["session"]`) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
+| API guard (Bearer → 401 JSON; 503 on IdP outage) | `GatedhouseApiFilter` (servlet) | `GatedhouseApiFilter` (WSGI) / `gatedhouse.asgi.GatedhouseApiFilter` (ASGI) | `GatedhouseApiFilter::authenticate(header)` → `Result<GatedContext, FilterError>` |
+| Web guard (session → login redirect; 503 on IdP outage) | `GatedhouseWebFilter` (servlet, reads `HttpSession`) | `GatedhouseWebFilter` (WSGI) / `gatedhouse.asgi.GatedhouseWebFilter` (ASGI, reads `scope["session"]`) | `GatedhouseWebFilter::check(token, ctx_path)` → `WebFilterOutcome` |
 | Privilege asserts | `requireAdmin/requireHuman/requireScope` (throw `ForbiddenException`) | `require_admin/require_human/require_scope` (raise `ForbiddenException`) | `require_admin/require_human/require_scope` (return `FilterError::Forbidden`) |
+| IdP outage (`JWKS_UNAVAILABLE`) | 503 + `Retry-After: 30`, no challenge; web filter keeps the session | same (WSGI + ASGI; WebSockets close with 1013) | `FilterError::Unavailable` (`retry_after()`), `WebFilterOutcome::Unavailable` |
 | 401 challenge header | `GatedhouseApiFilter.WWW_AUTHENTICATE_CHALLENGE` (emitted automatically) | `gatedhouse.WWW_AUTHENTICATE_CHALLENGE` (WSGI + ASGI emit automatically) | `gatedhouse::WWW_AUTHENTICATE` + `FilterError::challenge_header()` (host copies onto 401) |
 | Verify-only instance | `GatedhouseFactory.createJustTokenVerifier(cfg)` | `GatedhouseFactory.create_just_token_verifier(cfg)` | `GatedhouseFactory::create_just_token_verifier(cfg)` |
 
-The verify-only instance needs no database; every database-backed method on it fails fast (Java `UnsupportedOperationException`, Python `NotImplementedError`, Rust panic) with the same message. The request-context key (`com.twelvevectors.gatedhouse.context`), default login path (`/auth/login`), default session token attribute (`access_token`), security headers, and 401 JSON body shape are identical across SDKs. Every guard-produced 401 also carries the RFC 6750 challenge header `WWW-Authenticate: Bearer`; 403 responses and login redirects never do.
+The verify-only instance needs no database; every database-backed method on it fails fast (Java `UnsupportedOperationException`, Python `NotImplementedError`, Rust panic) with the same message. The request-context key (`com.twelvevectors.gatedhouse.context`), default login path (`/auth/login`), default session token attribute (`access_token`), security headers, and error bodies are byte-identical across SDKs: `{"error":"unauthorized","reason":"expired","detail":"Token verification failed"}`. The `reason` is the stable lower-case code of the verification failure (`missing_token` when there is no token), never the verifier's internal message, which can include the identity provider's URL. Every guard-produced 401 also carries the RFC 6750 challenge header `WWW-Authenticate: Bearer`; 403s, 503s and login redirects never do. The Bearer scheme is matched case-insensitively (RFC 7235).
+
+Only token verification is guarded. Exceptions from your application pass through untouched (a database outage stays a 503, a bug stays a 500), except the filters' own `ForbiddenException` / `UnauthorizedException`, which become 403 / 401 while the response is uncommitted.
 
 ### Failure-mode handling for `verify_token`
 
@@ -338,7 +341,7 @@ All three SDKs expose the **same nine reasons** so the host can branch on the fa
 | Wrong issuer | `INVALID_ISSUER` | `INVALID_ISSUER` |
 | Wrong audience | `INVALID_AUDIENCE` | `INVALID_AUDIENCE` |
 | Malformed | `MALFORMED` | `MALFORMED` |
-| Unknown `kid` after JWKS refresh | `UNKNOWN_KEY` | `UNKNOWN_KEY` |
+| Unknown `kid` (after a refresh, if one is allowed) | `UNKNOWN_KEY` | `UNKNOWN_KEY` |
 | JWKS endpoint unreachable | `JWKS_UNAVAILABLE` | `JWKS_UNAVAILABLE` |
 | Catch-all | `OTHER` | `OTHER` |
 
@@ -349,6 +352,7 @@ Caching is opt-in: it is active only when a cache is passed into the config (`.p
 | Java | Python | Rust |
 |---|---|---|
 | `new InMemoryPermissionCache(Duration.ofSeconds(60))` | `InMemoryPermissionCache(timedelta(seconds=60))` | `InMemoryPermissionCache::with_ttl(Duration::from_secs(60))` |
+| Bound (default 10,000 entries): `new InMemoryPermissionCache(ttl, maxEntries)` | `InMemoryPermissionCache(ttl, max_entries=n)` | `InMemoryPermissionCache::with_ttl_and_max_entries(ttl, n)` |
 | `new JCachePermissionCache(myJCache)` | *(host implements `PermissionCache` directly)* | *(host implements `PermissionCache` directly)* |
 | `gh.invalidateCache(id, org)` | `gh.invalidate_cache(id, org)` | `gh.invalidate_cache(id, org)` |
 | `gh.invalidateAllCache()` | `gh.invalidate_all_cache()` | `gh.invalidate_all_cache()` |
@@ -356,13 +360,13 @@ Caching is opt-in: it is active only when a cache is passed into the config (`.p
 
 ### Smoke tests
 
-All three SDKs ship the same end-to-end smoke test with identical `smoketest`-prefixed fixture names. They share the same scenarios and the same per-scenario `[PASS]` / `[FAIL]` output. Run any one of them against a real Postgres:
+All three SDKs have the same end-to-end smoke test with identical `smoketest`-prefixed fixture names, scenarios and `[PASS]` / `[FAIL]` output. They write and delete fixtures, so they are development tools and are **not shipped** in the jar, wheel or crate. Run one from a checkout against a development database:
 
-```bash
-java -cp ... com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <pwd>
-python -m gatedhouse.cli.smoke_test "<conninfo>"
-cargo run --bin gatedhouse-smoke-test -- "<conninfo>"
-```
+| SDK | Command (from the SDK directory) |
+|---|---|
+| Java | `mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt`, then `java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest <jdbc-url> <user> <pwd>` |
+| Python | `python tests/smoke_test.py "<conninfo>"` (needs `gatedhouse[pool]`) |
+| Rust | `cargo run --features r2d2 --example smoke_test -- "<conninfo>"` |
 
 Exit code 0 = all checks pass.
 
@@ -559,8 +563,7 @@ com.twelvevectors.gatedhouse
 │   └── TokenVerificationException     (carries a Reason enum)
 │
 └── cli
-    ├── Migrate                 ← runs the migration; main(String[])
-    └── SmokeTest               ← end-to-end smoke test against a real DB
+    └── Migrate                 ← runs the migration; main(String[])
 ```
 
 ### Naming conventions
@@ -696,7 +699,7 @@ dependency so production hosts never download it:
 |---|---|---|---|
 | Add | `com.zaxxer:HikariCP` | `pip install 'gatedhouse[pool]'` | `features = ["r2d2"]` |
 | Create | `Database.fromUrl(url, user, pwd)` | `Database.from_uri(conninfo)` | `PooledDatabase::from_url(conninfo)?` |
-| Settings (defaults) | `PooledDatabase.Settings`: `maximumPoolSize` 10, `connectionTimeout` 10 s, `maxLifetime` 30 min | `max_size=10, timeout=10.0, max_lifetime=1800.0` | `PoolSettings`: `with_max_size(10)`, `with_connection_timeout(10 s)`, `with_max_lifetime(30 min)` |
+| Settings (defaults) | `PooledDatabase.Settings`: `maximumPoolSize` 10, `connectionTimeout` 10 s, `maxLifetime` 30 min, `statementTimeout` 30 s | `max_size=10, timeout=10.0, max_lifetime=1800.0, statement_timeout=30.0` | `PoolSettings`: `with_max_size(10)`, `with_connection_timeout(10 s)`, `with_max_lifetime(30 min)`, `with_statement_timeout(30 s)` |
 | TLS | via the JDBC URL | via `sslmode` in the URL | `PooledDatabase::from_url_with_tls(conninfo, tls, settings)` |
 | Close | `pool.close()` / try-with-resources | `pool.close()` / `with` | drop the last `Arc` |
 | Missing dependency | `IllegalStateException` naming HikariCP | `ImportError` naming `gatedhouse[pool]` | compile error (type behind the feature) |
@@ -707,8 +710,25 @@ pool opens lazily: a briefly unreachable database does not stop it being
 created; the first operation reports it. HikariCP logs through SLF4J; without
 an SLF4J backend it prints a one-time "no providers" notice, which is harmless.
 
+The pool sets `statement_timeout` on its own sessions (zero means no limit),
+so a slow or blocked query cannot hold a connection indefinitely; a timed-out
+statement is an **UNAVAILABLE** error. A connection used within the last
+0.5 s is handed out without a liveness round trip (HikariCP's rule, applied
+in all three SDKs); an idle one is checked first, so a database restart is
+detected.
+
 The migration CLIs use one plain connection and need none of these
 dependencies.
+
+### Bounding queries on your own pool
+
+Gatedhouse never changes the session settings of connections it borrows from
+your pool. To bound its queries there, set a statement timeout on the pool or
+the database role, for example HikariCP `connectionInitSql = "SET
+statement_timeout = 30000"`, psycopg_pool `configure=`, the libpq option
+`options=-c statement_timeout=30000`, or `ALTER ROLE app SET
+statement_timeout = '30s'`. Timeouts (SQLSTATE 57014) and resource exhaustion
+(class 53) are reported as **UNAVAILABLE**.
 
 ### When the database is unavailable
 
@@ -942,7 +962,7 @@ try {
 | `INVALID_ISSUER` / `INVALID_AUDIENCE` | Token was issued for a different system | Reject; SSO redirect |
 | `MALFORMED` | Not a valid JWS compact serialization | Reject; possibly malicious |
 | `UNKNOWN_KEY` | `kid` not in JWKS even after refresh | Reject; treat as forged |
-| `JWKS_UNAVAILABLE` | Issuer's JWKS endpoint unreachable | Transient; retry or fail-closed per policy |
+| `JWKS_UNAVAILABLE` | Issuer's JWKS endpoint unreachable | Transient: the bundled filters answer 503 with `Retry-After`; never treat as "allowed" |
 | `NOT_YET_VALID` | `nbf` is in the future | Likely clock skew; reject |
 | `OTHER` | Unexpected | Reject; inspect cause |
 
@@ -1357,7 +1377,7 @@ gh.roleManager().assignToIdentity(founderId, orgId, "gatedhouse:owner");
 
 ### Testing
 
-- The bundled `cli/SmokeTest` exercises the main paths (catalog, roles, inheritance, wildcards, groups, suspension, owner role, `getEffectivePermissions`). It's idempotent and self-cleaning, safe to run repeatedly against a real Postgres.
+- The smoke test (in each SDK's test sources, not shipped) exercises the main paths (catalog, roles, inheritance, wildcards, groups, suspension, owner role, `getEffectivePermissions`). It's idempotent and self-cleaning, safe to run repeatedly against a real Postgres.
 - Each test scenario uses `smoketest`-prefixed identifiers so it doesn't collide with real data. You can adapt it as a template for application-specific integration tests.
 
 ---

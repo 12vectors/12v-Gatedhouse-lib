@@ -368,6 +368,15 @@ for (GrantPath p : e.paths()) {
   carries a `kind`. See [Connecting to the Database](../SKILLS.md#connecting-to-the-database).
 - `addParentRole` now rejects an edge that would create an inheritance cycle.
   Existing cycles are not removed; evaluation tolerates them.
+- **Client-visible change (filters):** 401 bodies now carry a `reason` code
+  and a fixed `detail` instead of the verifier's message; an identity-provider
+  outage is `503` with `Retry-After` instead of `401` (session filters keep
+  the session instead of redirecting). Rust's `FilterError::Unauthorized`
+  becomes a struct variant and `FilterError` / `WebFilterOutcome` gain an
+  `Unavailable` variant.
+- The smoke tests are no longer shipped in the jar, wheel or crate (the
+  `gatedhouse-smoketest` script and the `gatedhouse-smoke-test` binary are
+  gone); run them from a checkout.
 
 ## Decision log
 

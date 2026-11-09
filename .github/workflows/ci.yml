@@ -58,7 +58,7 @@ jobs:
           mvn --batch-mode -q dependency:build-classpath -Dmdep.outputFile=cp.txt
           java -cp "target/classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.Migrate \
             jdbc:postgresql://localhost:5432/gatedhouse_test gh gh
-          java -cp "target/classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest \
+          java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest \
             jdbc:postgresql://localhost:5432/gatedhouse_test gh gh
 
   python:
@@ -95,7 +95,7 @@ jobs:
       - name: Smoke test (through Database.from_uri's pool)
         run: |
           python -m gatedhouse.cli.migrate "$GATEDHOUSE_TEST_DATABASE_URL"
-          python -m gatedhouse.cli.smoke_test "$GATEDHOUSE_TEST_DATABASE_URL"
+          python tests/smoke_test.py "$GATEDHOUSE_TEST_DATABASE_URL"
 
   rust:
     runs-on: ubuntu-latest
@@ -129,4 +129,4 @@ jobs:
       - name: Smoke test (through PooledDatabase::from_url)
         run: |
           cargo run --bin gatedhouse-migrate -- "$GATEDHOUSE_TEST_DATABASE_URL"
-          cargo run --features r2d2 --bin gatedhouse-smoke-test -- "$GATEDHOUSE_TEST_DATABASE_URL"
+          cargo run --features r2d2 --example smoke_test -- "$GATEDHOUSE_TEST_DATABASE_URL"
