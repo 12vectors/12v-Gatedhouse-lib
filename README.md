@@ -239,5 +239,6 @@ Every SDK has an end-to-end smoke test using the same fixture names (`smoketests
 
 ## Where to start
 
-- New to the library: read [SKILLS.md](SKILLS.md) for concepts, schema design, and the full API surface.
-- Building against it: open the SDK directory for your language and follow the quick-start in SKILLS.md.
+- New to the library: read the **[User Guide](docs/guide/README.md)**, which walks through every feature with Java, Python and Rust examples, from installation to production operations.
+- Looking something up: [SKILLS.md](SKILLS.md) is the compact reference, with name-by-name tables across the three SDKs.
+- Why it works the way it does: [docs/MODEL.md](docs/MODEL.md) records the authorization model and its design decisions.

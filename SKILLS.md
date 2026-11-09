@@ -2,6 +2,8 @@
 
 Embedded authorization library. Provides RBAC with role inheritance, group-based assignments, multi-tenancy, JWT verification against an OIDC-style issuer (Sphinx), permission caching, and a generic database-level audit log.
 
+> This is the compact reference. For a narrative walkthrough of every feature, with examples in all three languages, read the **[User Guide](docs/guide/README.md)**.
+
 > Three SDKs are maintained in this repo from a single Postgres schema (V001 is byte-identical across all three). The **Java SDK is the reference implementation**; **Python** and **Rust** are faithful ports with the same architecture, the same fixture-named smoke test, and the same advisory-lock key so any combination of them can migrate or read the same database.
 >
 > **One caveat to know up front:** permission caching is **opt-in** (no cache is configured by default), and the bundled `InMemoryPermissionCache` is **process-local**. Two apps that enable it against one database hold independent cache copies and can briefly disagree after a write, until the TTL expires. See [Permission Cache → Process-local — caveat for multi-app deployments](#process-local--caveat-for-multi-app-deployments) for the failure mode and how to fix it with a shared cache.
@@ -446,7 +448,7 @@ A role is a global named bag of permissions, optionally inheriting permissions f
 
 The set of effective roles is the **union** of both paths, plus the recursive closure over `role_inherits` (parent roles, grandparents, etc.).
 
-Cycles in `role_inherits` are not a problem: the recursive CTE used for evaluation deduplicates via SQL `UNION` and terminates after one full traversal.
+Inheritance cycles are rejected: `addParentRole` fails (Java `IllegalArgumentException`, Python `ValueError`, Rust `GatedhouseError::InvalidArgument`) when the parent already inherits from the child. The check runs under a transaction-scoped advisory lock shared by all SDKs, so concurrent edits cannot together close a cycle. Evaluation also tolerates any cycle created outside the library (the recursive query deduplicates and terminates).
 
 ### Built-in `gatedhouse:owner` role
 
@@ -1211,14 +1213,11 @@ Each entry records:
 
 ### Attributing changes to an actor
 
-The trigger reads the optional Postgres session variable `gatedhouse.actor`. To attribute a batch of writes to a specific principal, set the variable on the connection before the writes:
+The trigger reads the optional Postgres setting `gatedhouse.actor`; when unset, `changed_by` is `NULL`. Each library write runs in its own transaction on a connection the host never sees, so the actor **cannot currently be set per request** through the library (planned; issue #9). Writes you make yourself in SQL can use `SET LOCAL gatedhouse.actor = '...'` in their transaction. For library writes, a per-database-role default attributes changes to the service that made them:
 
 ```sql
-SET LOCAL gatedhouse.actor = 'alice@example.com';
--- subsequent INSERT/UPDATE/DELETE in this transaction record changed_by = 'alice@example.com'
+ALTER ROLE billing_service SET gatedhouse.actor = 'billing-service';
 ```
-
-When unset, `changed_by` is `NULL`.
 
 ### Querying
 
