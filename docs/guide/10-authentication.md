@@ -33,7 +33,8 @@ GatedhouseConfig::builder(db).token_verifier(
 
 Accepted only if: algorithm RS256; header `kid` present in the JWKS and the
 signature verifies; `iss` equals the issuer; `aud` contains the audience;
-`exp` not passed; `nbf` (if present) reached. No clock-skew leeway.
+`exp` not passed; `nbf` (if present) reached; `sub` is a non-empty JSON
+string. No clock-skew leeway.
 
 | `AuthenticatedSubject` | Claim |
 |---|---|
@@ -50,7 +51,7 @@ signature verifies; `iss` equals the issuer; `aud` contains the audience;
 | `INVALID_SIGNATURE` | signature fails | 401; security event |
 | `INVALID_ISSUER` | wrong `iss` | 401 |
 | `INVALID_AUDIENCE` | wrong `aud` | 401 |
-| `MALFORMED` | not a JWT, or no `kid` | 401 |
+| `MALFORMED` | not a JWT, no `kid`, or `sub` missing, empty or not a string | 401 |
 | `UNKNOWN_KEY` | `kid` not in JWKS | 401; treat as forged |
 | `JWKS_UNAVAILABLE` | JWKS not fetchable | **503** |
 | `OTHER` | anything else | 401 |
@@ -81,6 +82,11 @@ afterwards verification fails with `JWKS_UNAVAILABLE`. For persistent
 `isHuman()`, `isDelegated()`, `hasScope(s)` (space-separated `scope`). Python
 and Rust use snake_case. `role` is the token's claim set by the IdP, not a
 Gatedhouse role.
+
+A claim of the wrong JSON type (e.g. a numeric `email`, a non-object `act`)
+is treated as absent. Exception: a wrongly typed `person_type` gives an
+unknown identity type (Java `null`, Python `None`, Rust `""`), so
+`isHuman()` is false; only a missing `person_type` defaults to `human`.
 
 ## Verify-only instance
 

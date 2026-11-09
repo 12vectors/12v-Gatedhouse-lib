@@ -78,19 +78,28 @@ public record GatedContext(
     @SuppressWarnings("unchecked")
     public static GatedContext fromSubject(AuthenticatedSubject subject) {
         Map<String, Object> claims = subject.claims();
+        // A claim of the wrong type is treated as absent, except person_type:
+        // absent defaults to "human", but a wrongly typed one is unknown
+        // (null), so it can never pass requireHuman.
+        Object personType = claims.getOrDefault("person_type", "human");
+        Object act = claims.get("act");
         return new GatedContext(
             subject.id(),
-            (String) claims.get("email"),
-            (String) claims.get("role"),
-            (String) claims.getOrDefault("person_type", "human"),
-            (String) claims.get("auth_method"),
+            string(claims, "email"),
+            string(claims, "role"),
+            personType instanceof String s ? s : null,
+            string(claims, "auth_method"),
             Boolean.TRUE.equals(claims.get("mfa_verified")),
             Boolean.TRUE.equals(claims.get("email_verified")),
-            (String) claims.get("client_id"),
-            (String) claims.get("scope"),
-            (String) claims.get("delegation_id"),
-            (Map<String, Object>) claims.get("act"),
+            string(claims, "client_id"),
+            string(claims, "scope"),
+            string(claims, "delegation_id"),
+            act instanceof Map<?, ?> m ? (Map<String, Object>) m : null,
             claims
         );
+    }
+
+    private static String string(Map<String, Object> claims, String name) {
+        return claims.get(name) instanceof String s ? s : null;
     }
 }

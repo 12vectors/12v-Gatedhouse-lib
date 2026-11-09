@@ -17,6 +17,7 @@ import com.nimbusds.jose.proc.JWSKeySelector;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.ConfigurableJWTProcessor;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
 
@@ -132,6 +133,14 @@ final class JwtVerification {
                 "Token not valid before " + nbf.toInstant());
         }
 
+        // The identity: a token without one must not authenticate. Checked on
+        // the raw payload, because Nimbus converts a numeric sub to a string.
+        String subject = rawStringClaim(token, "sub");
+        if (subject == null || subject.isEmpty()) {
+            throw fail(TokenVerificationException.Reason.MALFORMED,
+                "sub claim missing, empty or not a string");
+        }
+
         Date iat = claims.getIssueTime();
         Object typeClaim = claims.getClaim("type");
         String tokenType = typeClaim instanceof String s ? s : null;
@@ -140,7 +149,7 @@ final class JwtVerification {
         custom.keySet().removeAll(STANDARD_CLAIMS);
 
         return new AuthenticatedSubject(
-            claims.getSubject(),
+            subject,
             claims.getIssuer(),
             audiences.get(0),
             iat == null ? null : iat.toInstant(),
@@ -148,6 +157,18 @@ final class JwtVerification {
             tokenType,
             Collections.unmodifiableMap(custom)
         );
+    }
+
+    /** The claim as sent in the (already verified) token, or null if absent
+     *  or not a JSON string. */
+    private static String rawStringClaim(String token, String name) {
+        try {
+            return SignedJWT.parse(token).getPayload().toJSONObject().get(name)
+                instanceof String s ? s : null;
+        } catch (ParseException e) {
+            throw fail(TokenVerificationException.Reason.MALFORMED,
+                "JWT could not be parsed: " + e.getMessage(), e);
+        }
     }
 
     private static TokenVerificationException fail(

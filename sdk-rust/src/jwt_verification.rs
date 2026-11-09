@@ -163,7 +163,16 @@ impl JwtVerification {
     fn build_subject(
         claims: HashMap<String, Value>,
     ) -> Result<AuthenticatedSubject, TokenVerificationError> {
-        let id = string_claim(&claims, "sub")?;
+        // The identity: a token without one must not authenticate.
+        let id = match claims.get("sub") {
+            Some(Value::String(s)) if !s.is_empty() => s.clone(),
+            _ => {
+                return Err(TokenVerificationError::new(
+                    TokenVerificationReason::Malformed,
+                    "sub claim missing, empty or not a string",
+                ));
+            }
+        };
         let issuer = string_claim(&claims, "iss")?;
         let audience = match claims.get("aud") {
             Some(Value::String(s)) => s.clone(),
@@ -355,12 +364,74 @@ mod tests {
     }
 
     fn token(kid: &str) -> String {
+        token_with(kid, |_| {})
+    }
+
+    /// A valid token for `u`, adjusted by `edit`.
+    fn token_with(kid: &str, edit: impl FnOnce(&mut serde_json::Map<String, Value>)) -> String {
         let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
         header.kid = Some(kid.to_string());
         let exp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 600;
-        let claims = serde_json::json!({"sub": "u", "iss": "iss", "aud": "aud", "exp": exp});
+        let mut claims = serde_json::json!({"sub": "u", "iss": "iss", "aud": "aud", "exp": exp})
+            .as_object()
+            .unwrap()
+            .clone();
+        edit(&mut claims);
         let key = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_KEY_PEM.as_bytes()).unwrap();
         jsonwebtoken::encode(&header, &claims, &key).unwrap()
+    }
+
+    #[test]
+    fn missing_empty_or_non_string_sub_is_malformed() {
+        let idp = idp();
+        let v = verifier(&idp);
+        let missing = token_with("k1", |c| {
+            c.remove("sub");
+        });
+        let empty = token_with("k1", |c| {
+            c.insert("sub".into(), "".into());
+        });
+        let number = token_with("k1", |c| {
+            c.insert("sub".into(), 123.into());
+        });
+        for (name, t) in [("missing", missing), ("empty", empty), ("number", number)] {
+            assert_eq!(TokenVerificationReason::Malformed, reason(v.verify(&t)), "{name}");
+        }
+    }
+
+    #[test]
+    fn wrongly_typed_context_claims_are_absent() {
+        use crate::GatedContext;
+        let idp = idp();
+        let v = verifier(&idp);
+        let subject = v
+            .verify(&token_with("k1", |c| {
+                for (k, val) in [
+                    ("email", serde_json::json!(1)),
+                    ("role", serde_json::json!(["admin"])),
+                    ("auth_method", serde_json::json!(true)),
+                    ("client_id", serde_json::json!(2)),
+                    ("scope", serde_json::json!({"a": "b"})),
+                    ("delegation_id", serde_json::json!(3)),
+                    ("act", serde_json::json!("not-an-object")),
+                ] {
+                    c.insert(k.into(), val);
+                }
+            }))
+            .unwrap();
+        let ctx = GatedContext::from_subject(&subject);
+        assert_eq!("u", ctx.person_id);
+        assert!(ctx.email.is_none() && ctx.role.is_none() && ctx.auth_method.is_none());
+        assert!(ctx.client_id.is_none() && ctx.scope.is_none() && ctx.delegation_id.is_none());
+        assert!(ctx.actor_claims.is_none());
+        assert!(!ctx.is_admin() && !ctx.is_delegated());
+        assert!(ctx.is_human(), "a missing person_type still defaults to human");
+
+        let ctx = GatedContext::from_subject(
+            &v.verify(&token_with("k1", |c| { c.insert("person_type".into(), 7.into()); })).unwrap(),
+        );
+        assert!(!ctx.is_human(), "a wrongly typed person_type is not human");
+        assert_eq!("", ctx.identity_type);
     }
 
     fn reason(result: Result<AuthenticatedSubject, TokenVerificationError>) -> TokenVerificationReason {

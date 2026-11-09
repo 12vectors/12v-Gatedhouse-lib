@@ -57,15 +57,24 @@ impl GatedContext {
     }
 
     /// Construct a `GatedContext` from an [`AuthenticatedSubject`].
+    ///
+    /// A claim of the wrong type is treated as absent, except `person_type`:
+    /// absent defaults to `"human"`, but a wrongly typed one is unknown (an
+    /// empty `identity_type`), so it can never pass `require_human`.
     pub fn from_subject(subject: &AuthenticatedSubject) -> Self {
         let claims = &subject.claims;
         let str_claim = |name: &str| claims.get(name).and_then(Value::as_str).map(str::to_string);
         let bool_claim = |name: &str| claims.get(name).and_then(Value::as_bool) == Some(true);
+        let identity_type = match claims.get("person_type") {
+            None => "human".to_string(),
+            Some(Value::String(s)) => s.clone(),
+            Some(_) => String::new(),
+        };
         Self {
             person_id: subject.id.clone(),
             email: str_claim("email"),
             role: str_claim("role"),
-            identity_type: str_claim("person_type").unwrap_or_else(|| "human".to_string()),
+            identity_type,
             auth_method: str_claim("auth_method"),
             mfa_verified: bool_claim("mfa_verified"),
             email_verified: bool_claim("email_verified"),

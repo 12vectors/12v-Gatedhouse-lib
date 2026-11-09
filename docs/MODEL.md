@@ -106,6 +106,11 @@ Changes in the release after 0.3.0 (all breaking changes are bundled):
   Rust `FilterError::Unauthorized` is a struct variant; `FilterError` and
   `WebFilterOutcome` gain `Unavailable`.
 - Rust token verification no longer allows 60 s of clock skew.
+- Tokens whose `sub` is missing, empty or not a string are rejected as
+  `MALFORMED` in every SDK (Java accepted them with a null or converted
+  identity; Python failed with an uncaught error; Rust accepted an empty
+  `sub`). `GatedContext` treats wrongly typed claims as absent; a wrongly
+  typed `person_type` is not human.
 - Smoke tests are no longer shipped (`gatedhouse-smoketest` script and
   `gatedhouse-smoke-test` binary removed).
 

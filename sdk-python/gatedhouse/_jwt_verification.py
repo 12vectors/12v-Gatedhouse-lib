@@ -42,6 +42,11 @@ from ._types import AuthenticatedSubject
 
 _STANDARD_CLAIMS = frozenset({"sub", "iss", "aud", "iat", "exp", "nbf", "type"})
 
+# PyJWT 2.10+ rejects a non-string sub itself, with InvalidSubjectError (an
+# InvalidTokenError); older releases don't have it. Empty tuple: catches nothing.
+_SUBJECT_ERRORS: tuple[type[Exception], ...] = tuple(
+    e for e in (getattr(jwt.exceptions, "InvalidSubjectError", None),) if e is not None)
+
 _R = TokenVerificationException.Reason
 
 #: Seconds fetched signing keys are trusted before they are refetched, so a
@@ -139,11 +144,20 @@ class JwtVerification:
             raise TokenVerificationException(_R.INVALID_SIGNATURE, str(e)) from e
         except DecodeError as e:
             raise TokenVerificationException(_R.MALFORMED, str(e)) from e
+        except _SUBJECT_ERRORS as e:
+            raise TokenVerificationException(
+                _R.MALFORMED, "sub claim missing, empty or not a string") from e
         except InvalidTokenError as e:
             raise TokenVerificationException(_R.OTHER, str(e)) from e
 
         # PyJWT validates iss/aud/exp/nbf when those kwargs are passed,
         # so reaching here means the token's standard claims are good.
+
+        # The identity: a token without one must not authenticate.
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject:
+            raise TokenVerificationException(
+                _R.MALFORMED, "sub claim missing, empty or not a string")
 
         exp_ts = claims.get("exp")
         if not isinstance(exp_ts, (int, float)):
@@ -165,7 +179,7 @@ class JwtVerification:
         custom = {k: v for k, v in claims.items() if k not in _STANDARD_CLAIMS}
 
         return AuthenticatedSubject(
-            id=claims["sub"],
+            id=subject,
             issuer=claims["iss"],
             audience=audience,
             issued_at=issued_at,

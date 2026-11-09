@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from gatedhouse import (
     AuthenticatedSubject,
     Database,
+    GatedContext,
     GatedhouseDatabaseError,
     InMemoryPermissionCache,
     TokenVerificationException,
@@ -195,6 +196,9 @@ def _b64(n: int) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
+_DROP = object()
+
+
 class _JwksServer:
     """Serves a JWKS (or fails with 500) and counts requests."""
 
@@ -223,9 +227,12 @@ class _JwksServer:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.uri = f"http://127.0.0.1:{self.server.server_address[1]}/jwks.json"
 
-    def token(self, kid: str) -> str:
-        return jwt.encode({"sub": "u", "iss": "iss", "aud": "aud", "exp": int(time.time()) + 600},
-                          self.key, algorithm="RS256", headers={"kid": kid})
+    def token(self, kid: str, **overrides) -> str:
+        """A valid token; a claim overridden with ``_DROP`` is left out."""
+        claims = {"sub": "u", "iss": "iss", "aud": "aud", "exp": int(time.time()) + 600}
+        claims.update(overrides)
+        claims = {k: v for k, v in claims.items() if v is not _DROP}
+        return jwt.encode(claims, self.key, algorithm="RS256", headers={"kid": kid})
 
     def close(self) -> None:
         self.server.shutdown()
@@ -272,6 +279,70 @@ class JwksFetchLimitTest(unittest.TestCase):
                 self.verifier.verify(self.idp.token("k1"))
             self.assertIs(R.UNKNOWN_KEY, ctx.exception.reason)
             self.assertEqual(2, self.idp.requests)
+
+
+class SignedTokenClaimsTest(unittest.TestCase):
+    """Correctly signed tokens with unusual claims."""
+
+    def setUp(self) -> None:
+        self.idp = _JwksServer()
+        self.verifier = JwtVerification(TokenVerifierConfig(self.idp.uri, "iss", "aud"))
+
+    def tearDown(self) -> None:
+        self.idp.close()
+
+    def _reason(self, **claims) -> R:
+        with self.assertRaises(TokenVerificationException) as ctx:
+            self.verifier.verify(self.idp.token("k1", **claims))
+        return ctx.exception.reason
+
+    def test_missing_empty_or_non_string_sub_is_malformed(self) -> None:
+        self.assertIs(R.MALFORMED, self._reason(sub=_DROP))
+        self.assertIs(R.MALFORMED, self._reason(sub=""))
+        self.assertIs(R.MALFORMED, self._reason(sub=123))
+
+    def test_wrongly_typed_context_claims_are_absent(self) -> None:
+        subject = self.verifier.verify(self.idp.token(
+            "k1", email=1, role=["admin"], auth_method=True, client_id=2,
+            scope={"a": "b"}, delegation_id=3, act="not-an-object"))
+        ctx = GatedContext.from_subject(subject)
+        self.assertEqual("u", ctx.person_id)
+        for value in (ctx.email, ctx.role, ctx.auth_method, ctx.client_id,
+                      ctx.scope, ctx.delegation_id, ctx.actor_claims):
+            self.assertIsNone(value)
+        self.assertFalse(ctx.is_admin())
+        self.assertFalse(ctx.is_delegated())
+        self.assertTrue(ctx.is_human(), "a missing person_type still defaults to human")
+
+    def test_wrongly_typed_person_type_is_not_human(self) -> None:
+        ctx = GatedContext.from_subject(self.verifier.verify(self.idp.token("k1", person_type=7)))
+        self.assertIsNone(ctx.identity_type)
+        self.assertFalse(ctx.is_human())
+
+    def test_well_typed_context_claims_are_kept(self) -> None:
+        ctx = GatedContext.from_subject(self.verifier.verify(self.idp.token(
+            "k1", person_type="agent", scope="read write", act={"sub": "bob"})))
+        self.assertEqual("agent", ctx.identity_type)
+        self.assertFalse(ctx.is_human())
+        self.assertTrue(ctx.has_scope("write"))
+        self.assertEqual("bob", ctx.actor_claims["sub"])
+
+    def test_session_filter_sends_a_subless_token_to_login(self) -> None:
+        app = GatedhouseWebFilter(_ok_app, _VerifierFor(self.verifier))
+        session = {"access_token": self.idp.token("k1", sub=_DROP)}
+        status, headers, _ = _call_wsgi(app, {"gatedhouse.session": session})
+        self.assertEqual("302 Found", status)
+        self.assertNotIn("access_token", session)
+
+
+class _VerifierFor:
+    """A Gatedhouse stand-in backed by a real JwtVerification."""
+
+    def __init__(self, verification: JwtVerification) -> None:
+        self._verification = verification
+
+    def verify_token(self, token: str) -> AuthenticatedSubject:
+        return self._verification.verify(token)
 
 
 @unittest.skipUnless(URL, "set GATEDHOUSE_TEST_DATABASE_URL to run the owned-pool tests")

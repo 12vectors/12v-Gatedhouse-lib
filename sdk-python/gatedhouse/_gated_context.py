@@ -54,19 +54,31 @@ class GatedContext:
 
     @staticmethod
     def from_subject(subject: AuthenticatedSubject) -> "GatedContext":
-        """Construct a GatedContext from an ``AuthenticatedSubject``."""
+        """Construct a GatedContext from an ``AuthenticatedSubject``.
+
+        A claim of the wrong type is treated as absent, except
+        ``person_type``: absent defaults to ``"human"``, but a wrongly typed
+        one is unknown (``None``), so it can never pass ``require_human``.
+        """
         claims = subject.claims
+
+        def string(name: str) -> str | None:
+            value = claims.get(name)
+            return value if isinstance(value, str) else None
+
+        person_type = claims.get("person_type", "human")
+        act = claims.get("act")
         return GatedContext(
             person_id=subject.id,
-            email=claims.get("email"),
-            role=claims.get("role"),
-            identity_type=claims.get("person_type", "human"),
-            auth_method=claims.get("auth_method"),
+            email=string("email"),
+            role=string("role"),
+            identity_type=person_type if isinstance(person_type, str) else None,
+            auth_method=string("auth_method"),
             mfa_verified=claims.get("mfa_verified") is True,
             email_verified=claims.get("email_verified") is True,
-            client_id=claims.get("client_id"),
-            scope=claims.get("scope"),
-            delegation_id=claims.get("delegation_id"),
-            actor_claims=claims.get("act"),
+            client_id=string("client_id"),
+            scope=string("scope"),
+            delegation_id=string("delegation_id"),
+            actor_claims=act if isinstance(act, dict) else None,
             raw_claims=claims,
         )
