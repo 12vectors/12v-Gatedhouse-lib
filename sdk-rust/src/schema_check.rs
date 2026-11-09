@@ -10,7 +10,7 @@ use crate::error::GatedhouseError;
 pub(crate) const EXPECTED_VERSION: i32 = 2;
 
 pub(crate) fn verify(database: &dyn Database) -> Result<(), GatedhouseError> {
-    let mut conn = database.connection()?;
+    let mut conn = crate::sql::borrow(database, "SchemaCheck.verify")?;
     let row = conn.query_opt(
         "SELECT 1 FROM information_schema.tables \
          WHERE table_schema = 'gatedhouse' AND table_name = 'schema_versions'",

@@ -16,9 +16,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use gatedhouse::{
-    ConninfoDatabase, Database, EffectivePermission, EntityType, ExplanationOutcome, Gatedhouse,
+    Database, EffectivePermission, EntityType, ExplanationOutcome, Gatedhouse,
     GatedhouseConfig, GatedhouseError, GatedhouseFactory, GrantSource, InMemoryPermissionCache,
-    MembershipStatus,
+    MembershipStatus, PooledDatabase,
 };
 
 // ---- fixtures ------------------------------------------------------------
@@ -77,7 +77,15 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&args[0]));
+    // URL mode: Gatedhouse runs its own (r2d2) pool, dropped when the smoke
+    // test ends.
+    let database: Arc<dyn Database> = match PooledDatabase::from_url(&args[0]) {
+        Ok(pool) => Arc::new(pool),
+        Err(e) => {
+            eprintln!("Invalid connection string: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let cache = Arc::new(InMemoryPermissionCache::new());
     let config = GatedhouseConfig::builder(database.clone())
         .permission_cache(cache.clone())
@@ -440,11 +448,11 @@ fn run_lifecycle_scenarios(gh: &dyn Gatedhouse, database: &dyn Database) {
 
     section("Lifecycle: create_membership on a live membership still fails");
     let duplicate = members.create_membership(IDENTITY_DAVE, ORG, EntityType::User);
-    // Rust's Database error carries only "db error" (the SQLSTATE is not
-    // preserved; see issue #8), so this checks the failure, not its cause.
+    // Typed duplicate errors are issue #8; the message now carries the
+    // SQLSTATE (23505 unique_violation).
     check(
         "duplicate create_membership still fails with a Database error, as before",
-        matches!(duplicate, Err(GatedhouseError::Database(_))),
+        matches!(duplicate, Err(GatedhouseError::Database { .. })),
     );
 
     section("Lifecycle: remove_membership with no membership clears stray grants");
@@ -832,7 +840,7 @@ fn run_ttl_scenario(database: Arc<dyn Database>) {
 
 // ---- cleanup -------------------------------------------------------------
 
-fn cleanup(database: &dyn Database) -> Result<(), postgres::Error> {
+fn cleanup(database: &dyn Database) -> Result<(), gatedhouse::ConnectionError> {
     let mut conn = database.connection()?;
     let statements: &[&str] = &[
         "DELETE FROM gatedhouse.role_assignments WHERE org_id = 'smoketestorg'",

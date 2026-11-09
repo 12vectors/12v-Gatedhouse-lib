@@ -10,7 +10,10 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use gatedhouse::{ConninfoDatabase, Database, GatedhouseConfig, GatedhouseFactory};
+use gatedhouse::{
+    from_fn, Database, GatedhouseConfig, GatedhouseFactory, OwnedClient, PooledClient,
+};
+use postgres::{Client, NoTls};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,7 +26,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(&args[0]));
+    // One operation, so one plain connection: no pool, and no `r2d2`
+    // feature needed to run the migration.
+    let conninfo = args[0].clone();
+    let database: Arc<dyn Database> = Arc::new(from_fn(move || {
+        Ok(Box::new(OwnedClient(Client::connect(&conninfo, NoTls)?)) as PooledClient)
+    }));
     let config = GatedhouseConfig::builder(database).build();
 
     match GatedhouseFactory::migrate(&config) {

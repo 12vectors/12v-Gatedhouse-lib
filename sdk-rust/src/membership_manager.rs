@@ -19,6 +19,7 @@ use crate::database::Database;
 use crate::enums::{EntityType, MembershipStatus};
 use crate::error::GatedhouseError;
 use crate::permission_cache::PermissionCache;
+use crate::sql;
 
 /// Manages an identity's membership of an org: the gate that lets its
 /// grants in that org count.
@@ -98,55 +99,55 @@ impl MembershipManager for DefaultMembershipManager {
         org_id: &str,
         entity_type: EntityType,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        let mut tx = conn.transaction()?;
-        let entity_type_str = entity_type.db_value();
-        if lock_status(&mut tx, identity_id, org_id)? == Some(MembershipStatus::Removed) {
-            // Rejoin: same row, clean slate.
-            clear_grants(&mut tx, identity_id, org_id)?;
-            tx.execute(
-                "UPDATE gatedhouse.memberships \
-                 SET status = 'active'::gatedhouse.membership_status, \
-                     entity_type = $1::text::gatedhouse.entity_type, updated_at = NOW() \
-                 WHERE identity_id = $2 AND org_id = $3",
-                &[&entity_type_str, &identity_id, &org_id],
-            )?;
-        } else {
-            // No row, or a live one: a live row makes this insert fail with
-            // the unique violation, exactly as before.
-            let id = Uuid::new_v4();
-            tx.execute(
-                "INSERT INTO gatedhouse.memberships \
-                 (id, identity_id, org_id, entity_type, status) \
-                 VALUES ($1, $2, $3, $4::text::gatedhouse.entity_type, \
-                         'active'::gatedhouse.membership_status)",
-                &[&id, &identity_id, &org_id, &entity_type_str],
-            )?;
-        }
-        tx.commit()?;
+        sql::write(&*self.database, "MembershipManager.create_membership", |tx| {
+            let entity_type_str = entity_type.db_value();
+            if lock_status(tx, identity_id, org_id)? == Some(MembershipStatus::Removed) {
+                // Rejoin: same row, clean slate.
+                clear_grants(tx, identity_id, org_id)?;
+                tx.execute(
+                    "UPDATE gatedhouse.memberships \
+                     SET status = 'active'::gatedhouse.membership_status, \
+                         entity_type = $1::text::gatedhouse.entity_type, updated_at = NOW() \
+                     WHERE identity_id = $2 AND org_id = $3",
+                    &[&entity_type_str, &identity_id, &org_id],
+                )?;
+            } else {
+                // No row, or a live one: a live row makes this insert fail with
+                // the unique violation, exactly as before.
+                let id = Uuid::new_v4();
+                tx.execute(
+                    "INSERT INTO gatedhouse.memberships \
+                     (id, identity_id, org_id, entity_type, status) \
+                     VALUES ($1, $2, $3, $4::text::gatedhouse.entity_type, \
+                             'active'::gatedhouse.membership_status)",
+                    &[&id, &identity_id, &org_id, &entity_type_str],
+                )?;
+            }
+            Ok(())
+        })?;
         self.cache.invalidate(identity_id, org_id);
         Ok(())
     }
 
     fn remove_membership(&self, identity_id: &str, org_id: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        let mut tx = conn.transaction()?;
-        match lock_status(&mut tx, identity_id, org_id)? {
-            Some(current) if current != MembershipStatus::Removed => {
-                update_status(&mut tx, identity_id, org_id, MembershipStatus::Removed)?;
+        sql::write(&*self.database, "MembershipManager.remove_membership", |tx| {
+            match lock_status(tx, identity_id, org_id)? {
+                Some(current) if current != MembershipStatus::Removed => {
+                    update_status(tx, identity_id, org_id, MembershipStatus::Removed)?;
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        // Also when already Removed or absent: clears grants that arrived
-        // after an earlier removal.
-        clear_grants(&mut tx, identity_id, org_id)?;
-        tx.commit()?;
+            // Also when already Removed or absent: clears grants that arrived
+            // after an earlier removal.
+            clear_grants(tx, identity_id, org_id)?;
+            Ok(())
+        })?;
         self.cache.invalidate(identity_id, org_id);
         Ok(())
     }
 
     fn has_membership(&self, identity_id: &str, org_id: &str) -> Result<bool, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "MembershipManager.has_membership")?;
         let row = conn.query_opt(
             "SELECT 1 FROM gatedhouse.memberships \
              WHERE identity_id = $1 AND org_id = $2 AND status <> 'removed'",
@@ -164,25 +165,25 @@ impl MembershipManager for DefaultMembershipManager {
         if status == MembershipStatus::Removed {
             return self.remove_membership(identity_id, org_id);
         }
-        let mut conn = self.database.connection()?;
-        let mut tx = conn.transaction()?;
-        match lock_status(&mut tx, identity_id, org_id)? {
-            None => return Ok(()),
-            Some(MembershipStatus::Removed) => {
-                if status == MembershipStatus::Suspended {
-                    // Dropping `tx` without commit rolls back the lock.
-                    return Err(GatedhouseError::InvalidTransition(format!(
-                        "cannot suspend removed membership ({identity_id}, {org_id}); \
-                         revive it as Active or Pending instead"
-                    )));
+        sql::write(&*self.database, "MembershipManager.set_status", |tx| {
+            match lock_status(tx, identity_id, org_id)? {
+                None => return Ok(()),
+                Some(MembershipStatus::Removed) => {
+                    if status == MembershipStatus::Suspended {
+                        // Returning an error rolls the transaction back, releasing the lock.
+                        return Err(GatedhouseError::InvalidTransition(format!(
+                            "cannot suspend removed membership ({identity_id}, {org_id}); \
+                             revive it as Active or Pending instead"
+                        )));
+                    }
+                    // Rejoin: clean slate.
+                    clear_grants(tx, identity_id, org_id)?;
                 }
-                // Rejoin: clean slate.
-                clear_grants(&mut tx, identity_id, org_id)?;
+                Some(_) => {}
             }
-            Some(_) => {}
-        }
-        update_status(&mut tx, identity_id, org_id, status)?;
-        tx.commit()?;
+            update_status(tx, identity_id, org_id, status)?;
+            Ok(())
+        })?;
         self.cache.invalidate(identity_id, org_id);
         Ok(())
     }
@@ -192,7 +193,7 @@ impl MembershipManager for DefaultMembershipManager {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Option<MembershipStatus>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "MembershipManager.get_status")?;
         let row = conn.query_opt(
             "SELECT status::TEXT FROM gatedhouse.memberships \
              WHERE identity_id = $1 AND org_id = $2",
@@ -204,7 +205,7 @@ impl MembershipManager for DefaultMembershipManager {
                 let value: String = r.get(0);
                 MembershipStatus::from_db_value(&value)
                     .map(Some)
-                    .map_err(|e| GatedhouseError::Database(e.to_string()))
+                    .map_err(|e| GatedhouseError::query(e.to_string()))
             }
         }
     }
@@ -214,7 +215,7 @@ impl MembershipManager for DefaultMembershipManager {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Option<EntityType>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "MembershipManager.get_entity_type")?;
         let row = conn.query_opt(
             "SELECT entity_type::TEXT FROM gatedhouse.memberships \
              WHERE identity_id = $1 AND org_id = $2",
@@ -226,7 +227,7 @@ impl MembershipManager for DefaultMembershipManager {
                 let value: String = r.get(0);
                 EntityType::from_db_value(&value)
                     .map(Some)
-                    .map_err(|e| GatedhouseError::Database(e.to_string()))
+                    .map_err(|e| GatedhouseError::query(e.to_string()))
             }
         }
     }
@@ -250,7 +251,7 @@ fn lock_status(
             let value: String = r.get(0);
             MembershipStatus::from_db_value(&value)
                 .map(Some)
-                .map_err(|e| GatedhouseError::Database(e.to_string()))
+                .map_err(|e| GatedhouseError::query(e.to_string()))
         }
     }
 }

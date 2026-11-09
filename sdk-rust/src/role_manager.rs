@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::database::Database;
 use crate::error::GatedhouseError;
 use crate::permission_cache::PermissionCache;
+use crate::sql;
 
 pub trait RoleManager: Send + Sync {
     // ---- role definitions -------------------------------------------------
@@ -88,6 +89,12 @@ pub trait RoleManager: Send + Sync {
     fn get_group_roles(&self, group_id: &str, org_id: &str) -> Result<Vec<String>, GatedhouseError>;
 }
 
+/// Serializes role-inheritance edits across every process and instance
+/// sharing the database (same key as the Java and Python SDKs).
+/// Transaction-scoped: released at commit or rollback, never left on a
+/// pooled connection.
+pub(crate) const INHERITANCE_LOCK_KEY: i64 = 0x6768_726F_6C65_696E; // 'ghrolein'
+
 pub(crate) struct DefaultRoleManager {
     database: Arc<dyn Database>,
     cache: Arc<dyn PermissionCache>,
@@ -108,34 +115,38 @@ impl RoleManager for DefaultRoleManager {
         name: &str,
         description: Option<&str>,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.roles (key, name, description, is_system) \
-             VALUES ($1, $2, $3, FALSE)",
-            &[&key, &name, &description],
-        )?;
+        sql::write(&*self.database, "RoleManager.create_role", |tx| {
+            tx.execute(
+                "INSERT INTO gatedhouse.roles (key, name, description, is_system) \
+                 VALUES ($1, $2, $3, FALSE)",
+                &[&key, &name, &description],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 
     fn delete_role(&self, key: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.roles WHERE key = $1 AND is_system = FALSE",
-            &[&key],
-        )?;
+        sql::write(&*self.database, "RoleManager.delete_role", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.roles WHERE key = $1 AND is_system = FALSE",
+                &[&key],
+            )?;
+            Ok(())
+        })?;
         // Cascade dropped every assignment of this role.
         self.cache.invalidate_all();
         Ok(())
     }
 
     fn has_role(&self, key: &str) -> Result<bool, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.has_role")?;
         let row = conn.query_opt("SELECT 1 FROM gatedhouse.roles WHERE key = $1", &[&key])?;
         Ok(row.is_some())
     }
 
     fn list_roles(&self) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.list_roles")?;
         let rows = conn.query("SELECT key FROM gatedhouse.roles ORDER BY key", &[])?;
         Ok(rows.into_iter().map(|r| r.get::<_, String>(0)).collect())
     }
@@ -149,7 +160,7 @@ impl RoleManager for DefaultRoleManager {
         resource: Option<&str>,
         action: Option<&str>,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.grant_permission")?;
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO gatedhouse.role_permissions \
@@ -169,7 +180,7 @@ impl RoleManager for DefaultRoleManager {
         resource: Option<&str>,
         action: Option<&str>,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.revoke_permission")?;
         // Match on COALESCE so NULLs (wildcards) compare correctly.
         conn.execute(
             "DELETE FROM gatedhouse.role_permissions \
@@ -186,29 +197,57 @@ impl RoleManager for DefaultRoleManager {
     // ---- role inheritance -------------------------------------------------
 
     fn add_parent_role(&self, child_key: &str, parent_key: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.role_inherits (child_key, parent_key) \
-             VALUES ($1, $2)",
-            &[&child_key, &parent_key],
-        )?;
+        // Inheritance must stay acyclic. The check and the insert run in one
+        // transaction under INHERITANCE_LOCK_KEY, so concurrent calls adding
+        // A -> B and B -> A cannot both succeed.
+        sql::write(&*self.database, "RoleManager.add_parent_role", |tx| {
+            tx.execute("SELECT pg_advisory_xact_lock($1)", &[&INHERITANCE_LOCK_KEY])?;
+            // Would the new edge close a cycle? Only if the child is already
+            // the parent itself or one of the parent's ancestors.
+            if child_key != parent_key {
+                let cycle = tx.query_opt(
+                    "WITH RECURSIVE ancestors(key) AS ( \
+                         SELECT $1::TEXT \
+                         UNION \
+                         SELECT ri.parent_key FROM gatedhouse.role_inherits ri \
+                         JOIN ancestors a ON ri.child_key = a.key \
+                     ) SELECT 1 FROM ancestors WHERE key = $2",
+                    &[&parent_key, &child_key],
+                )?;
+                if cycle.is_some() {
+                    return Err(GatedhouseError::InvalidArgument(format!(
+                        "role '{child_key}' cannot inherit from '{parent_key}': \
+                         '{parent_key}' already inherits from '{child_key}', so this \
+                         would create an inheritance cycle"
+                    )));
+                }
+            }
+            tx.execute(
+                "INSERT INTO gatedhouse.role_inherits (child_key, parent_key) \
+                 VALUES ($1, $2)",
+                &[&child_key, &parent_key],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate_all();
         Ok(())
     }
 
     fn remove_parent_role(&self, child_key: &str, parent_key: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.role_inherits \
-             WHERE child_key = $1 AND parent_key = $2",
-            &[&child_key, &parent_key],
-        )?;
+        sql::write(&*self.database, "RoleManager.remove_parent_role", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.role_inherits \
+                 WHERE child_key = $1 AND parent_key = $2",
+                &[&child_key, &parent_key],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate_all();
         Ok(())
     }
 
     fn get_parent_roles(&self, child_key: &str) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.get_parent_roles")?;
         let rows = conn.query(
             "SELECT parent_key FROM gatedhouse.role_inherits \
              WHERE child_key = $1 ORDER BY parent_key",
@@ -225,7 +264,7 @@ impl RoleManager for DefaultRoleManager {
         org_id: &str,
         role_key: &str,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.assign_to_identity")?;
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO gatedhouse.role_assignments \
@@ -242,12 +281,14 @@ impl RoleManager for DefaultRoleManager {
         org_id: &str,
         role_key: &str,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.role_assignments \
-             WHERE identity_id = $1 AND org_id = $2 AND role_key = $3",
-            &[&identity_id, &org_id, &role_key],
-        )?;
+        sql::write(&*self.database, "RoleManager.revoke_from_identity", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.role_assignments \
+                 WHERE identity_id = $1 AND org_id = $2 AND role_key = $3",
+                &[&identity_id, &org_id, &role_key],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate(identity_id, org_id);
         Ok(())
     }
@@ -257,7 +298,7 @@ impl RoleManager for DefaultRoleManager {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.get_identity_roles")?;
         let rows = conn.query(
             "SELECT role_key FROM gatedhouse.role_assignments \
              WHERE identity_id = $1 AND org_id = $2 ORDER BY role_key",
@@ -274,12 +315,14 @@ impl RoleManager for DefaultRoleManager {
         org_id: &str,
         role_key: &str,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.group_roles (group_id, org_id, role_key) \
-             VALUES ($1, $2, $3)",
-            &[&group_id, &org_id, &role_key],
-        )?;
+        sql::write(&*self.database, "RoleManager.assign_to_group", |tx| {
+            tx.execute(
+                "INSERT INTO gatedhouse.group_roles (group_id, org_id, role_key) \
+                 VALUES ($1, $2, $3)",
+                &[&group_id, &org_id, &role_key],
+            )?;
+            Ok(())
+        })?;
         // Affects every member of the group; cache doesn't index by
         // group membership, so wholesale invalidate.
         self.cache.invalidate_all();
@@ -292,18 +335,20 @@ impl RoleManager for DefaultRoleManager {
         org_id: &str,
         role_key: &str,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.group_roles \
-             WHERE group_id = $1 AND org_id = $2 AND role_key = $3",
-            &[&group_id, &org_id, &role_key],
-        )?;
+        sql::write(&*self.database, "RoleManager.revoke_from_group", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.group_roles \
+                 WHERE group_id = $1 AND org_id = $2 AND role_key = $3",
+                &[&group_id, &org_id, &role_key],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate_all();
         Ok(())
     }
 
     fn get_group_roles(&self, group_id: &str, org_id: &str) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "RoleManager.get_group_roles")?;
         let rows = conn.query(
             "SELECT role_key FROM gatedhouse.group_roles \
              WHERE group_id = $1 AND org_id = $2 ORDER BY role_key",

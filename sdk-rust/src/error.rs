@@ -15,8 +15,18 @@ pub enum GatedhouseError {
     /// GroupSource startup, etc.).
     Initialization(String),
 
-    /// Wraps a `postgres::Error` raised during a Gatedhouse method.
-    Database(String),
+    /// A database operation failed. [`kind`](DatabaseErrorKind) says how,
+    /// so a host can tell "the database is unavailable, try again later"
+    /// ([`DatabaseErrorKind::Unavailable`], typically answered with HTTP
+    /// 503) apart from a statement the database refused
+    /// ([`DatabaseErrorKind::Query`]).
+    ///
+    /// An authorization check that ends in this error has not granted
+    /// anything: callers must treat it as a failure, never as "allowed".
+    Database {
+        kind: DatabaseErrorKind,
+        message: String,
+    },
 
     /// The target database has no `gatedhouse` schema. Run the migration.
     SchemaNotInitialized,
@@ -30,6 +40,10 @@ pub enum GatedhouseError {
     /// suspending a removed membership. The analog of Java's
     /// `IllegalStateException`.
     InvalidTransition(String),
+    /// The arguments describe a change the model forbids, e.g. a role
+    /// inheritance edge that would create a cycle. The analog of Java's
+    /// `IllegalArgumentException`.
+    InvalidArgument(String),
 }
 
 impl fmt::Display for GatedhouseError {
@@ -38,8 +52,11 @@ impl fmt::Display for GatedhouseError {
             GatedhouseError::Initialization(msg) => {
                 write!(f, "Gatedhouse initialization failed: {msg}")
             }
-            GatedhouseError::Database(msg) => write!(f, "Gatedhouse database error: {msg}"),
+            GatedhouseError::Database { message, .. } => {
+                write!(f, "Gatedhouse database error: {message}")
+            }
             GatedhouseError::InvalidTransition(msg) => write!(f, "Invalid transition: {msg}"),
+            GatedhouseError::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
             GatedhouseError::SchemaNotInitialized => write!(
                 f,
                 "Gatedhouse schema is not initialized in the target database.\n\n\
@@ -66,9 +83,64 @@ impl fmt::Display for GatedhouseError {
 
 impl std::error::Error for GatedhouseError {}
 
+/// How a database operation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DatabaseErrorKind {
+    /// No usable connection: the pool timed out handing one out, the
+    /// database could not be reached, or the connection was lost or shut
+    /// down mid-operation.
+    Unavailable,
+    /// The database was reached, but refused or failed the statement.
+    Query,
+}
+
+impl GatedhouseError {
+    /// A [`DatabaseErrorKind::Query`] failure with this message.
+    pub(crate) fn query(message: impl Into<String>) -> Self {
+        GatedhouseError::Database {
+            kind: DatabaseErrorKind::Query,
+            message: message.into(),
+        }
+    }
+
+    /// The database error's kind, if this is a database error.
+    pub fn database_kind(&self) -> Option<DatabaseErrorKind> {
+        match self {
+            GatedhouseError::Database { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+}
+
+/// Classifies a `postgres::Error`: SQLSTATE class 08 and 57P01-57P03 mean
+/// the database went away, as does a client-side failure with no SQLSTATE
+/// that closed the connection or came from the socket; anything else is the
+/// statement failing. The message keeps the SQLSTATE and the server's text.
 impl From<postgres::Error> for GatedhouseError {
     fn from(e: postgres::Error) -> Self {
-        GatedhouseError::Database(e.to_string())
+        let unavailable = match e.code() {
+            Some(code) => {
+                let code = code.code();
+                code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03")
+            }
+            None => {
+                e.is_closed()
+                    || std::error::Error::source(&e)
+                        .is_some_and(|s| s.downcast_ref::<std::io::Error>().is_some())
+            }
+        };
+        let message = match e.as_db_error() {
+            Some(db) => format!("{} ({}): {}", e, db.code().code(), db.message()),
+            None => e.to_string(),
+        };
+        GatedhouseError::Database {
+            kind: if unavailable {
+                DatabaseErrorKind::Unavailable
+            } else {
+                DatabaseErrorKind::Query
+            },
+            message,
+        }
     }
 }
 

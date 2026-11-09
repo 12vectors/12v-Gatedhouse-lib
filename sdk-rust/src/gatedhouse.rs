@@ -19,6 +19,7 @@ use crate::membership_manager::{DefaultMembershipManager, MembershipManager};
 use crate::permission_cache::PermissionCache;
 use crate::permission_catalog::{DefaultPermissionCatalog, PermissionCatalog};
 use crate::role_manager::{DefaultRoleManager, RoleManager};
+use crate::sql;
 use crate::types::{
     AuthenticatedSubject, EffectivePermission, ExplanationOutcome, GrantPath, GrantSource,
     PermissionExplanation,
@@ -229,7 +230,7 @@ impl DefaultGatedhouse {
         identity_id: &str,
         org_id: &str,
     ) -> Result<Vec<EffectivePermission>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "load_effective_permissions")?;
         let rows = conn.query(
             LOAD_EFFECTIVE_PERMISSIONS_SQL,
             &[
@@ -316,7 +317,7 @@ impl Gatedhouse for DefaultGatedhouse {
         resource: &str,
         action: &str,
     ) -> Result<PermissionExplanation, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "explain_permission")?;
         let rows = conn.query(
             EXPLAIN_PERMISSION_SQL,
             &[&identity_id, &org_id, &service, &resource, &action],
@@ -327,7 +328,7 @@ impl Gatedhouse for DefaultGatedhouse {
             if let Some(value) = r.get::<_, Option<String>>("status") {
                 membership_status = Some(
                     MembershipStatus::from_db_value(&value)
-                        .map_err(|e| GatedhouseError::Database(e.to_string()))?,
+                        .map_err(|e| GatedhouseError::query(e.to_string()))?,
                 );
             }
             // The LEFT JOIN's placeholder row (no paths) has a NULL source.
@@ -338,7 +339,7 @@ impl Gatedhouse for DefaultGatedhouse {
                 "DIRECT" => GrantSource::Direct,
                 "GROUP" => GrantSource::Group,
                 other => {
-                    return Err(GatedhouseError::Database(format!(
+                    return Err(GatedhouseError::query(format!(
                         "unexpected grant source in explain query: {other:?}"
                     )))
                 }

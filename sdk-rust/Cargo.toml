@@ -27,6 +27,16 @@ ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# OPTIONAL connection pool (feature `r2d2`): makes an r2d2 pool usable as a
+# Database, and provides PooledDatabase::from_url (Gatedhouse-owned pool,
+# recommended for dev/staging). Hosts passing their own pool via
+# database::from_fn never need it.
+r2d2 = { version = "0.8", optional = true }
+r2d2_postgres = { version = "0.18", optional = true }
+
+[features]
+r2d2 = ["dep:r2d2", "dep:r2d2_postgres"]
+
 [[bin]]
 name = "gatedhouse-migrate"
 path = "src/bin/migrate.rs"
@@ -34,3 +44,6 @@ path = "src/bin/migrate.rs"
 [[bin]]
 name = "gatedhouse-smoke-test"
 path = "src/bin/smoke_test.rs"
+# Runs through PooledDatabase::from_url, so the smoke test exercises the
+# Gatedhouse-owned pool: cargo run --features r2d2 --bin gatedhouse-smoke-test
+required-features = ["r2d2"]

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::database::Database;
 use crate::error::GatedhouseError;
 use crate::permission_cache::PermissionCache;
+use crate::sql;
 
 pub trait PermissionCatalog: Send + Sync {
     // ---- services ---------------------------------------------------------
@@ -71,20 +72,24 @@ impl PermissionCatalog for DefaultPermissionCatalog {
     // ---- services ---------------------------------------------------------
 
     fn add_service(&self, service: &str, description: Option<&str>) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.services (service, description) VALUES ($1, $2)",
-            &[&service, &description],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.add_service", |tx| {
+            tx.execute(
+                "INSERT INTO gatedhouse.services (service, description) VALUES ($1, $2)",
+                &[&service, &description],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 
     fn remove_service(&self, service: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.services WHERE service = $1",
-            &[&service],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.remove_service", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.services WHERE service = $1",
+                &[&service],
+            )?;
+            Ok(())
+        })?;
         // Cascade dropped resources, actions, and any role_permissions
         // referencing them. Affected identity set is wide.
         self.cache.invalidate_all();
@@ -92,7 +97,7 @@ impl PermissionCatalog for DefaultPermissionCatalog {
     }
 
     fn has_service(&self, service: &str) -> Result<bool, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.has_service")?;
         let row = conn.query_opt(
             "SELECT 1 FROM gatedhouse.services WHERE service = $1",
             &[&service],
@@ -101,7 +106,7 @@ impl PermissionCatalog for DefaultPermissionCatalog {
     }
 
     fn list_services(&self) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.list_services")?;
         let rows = conn.query(
             "SELECT service FROM gatedhouse.services ORDER BY service",
             &[],
@@ -117,27 +122,31 @@ impl PermissionCatalog for DefaultPermissionCatalog {
         resource: &str,
         description: Option<&str>,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.resources (service, resource, description) \
-             VALUES ($1, $2, $3)",
-            &[&service, &resource, &description],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.add_resource", |tx| {
+            tx.execute(
+                "INSERT INTO gatedhouse.resources (service, resource, description) \
+                 VALUES ($1, $2, $3)",
+                &[&service, &resource, &description],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 
     fn remove_resource(&self, service: &str, resource: &str) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.resources WHERE service = $1 AND resource = $2",
-            &[&service, &resource],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.remove_resource", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.resources WHERE service = $1 AND resource = $2",
+                &[&service, &resource],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate_all();
         Ok(())
     }
 
     fn has_resource(&self, service: &str, resource: &str) -> Result<bool, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.has_resource")?;
         let row = conn.query_opt(
             "SELECT 1 FROM gatedhouse.resources WHERE service = $1 AND resource = $2",
             &[&service, &resource],
@@ -146,7 +155,7 @@ impl PermissionCatalog for DefaultPermissionCatalog {
     }
 
     fn list_resources(&self, service: &str) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.list_resources")?;
         let rows = conn.query(
             "SELECT resource FROM gatedhouse.resources \
              WHERE service = $1 ORDER BY resource",
@@ -164,12 +173,14 @@ impl PermissionCatalog for DefaultPermissionCatalog {
         action: &str,
         description: Option<&str>,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "INSERT INTO gatedhouse.actions \
-             (service, resource, action, description) VALUES ($1, $2, $3, $4)",
-            &[&service, &resource, &action, &description],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.add_action", |tx| {
+            tx.execute(
+                "INSERT INTO gatedhouse.actions \
+                 (service, resource, action, description) VALUES ($1, $2, $3, $4)",
+                &[&service, &resource, &action, &description],
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -179,12 +190,14 @@ impl PermissionCatalog for DefaultPermissionCatalog {
         resource: &str,
         action: &str,
     ) -> Result<(), GatedhouseError> {
-        let mut conn = self.database.connection()?;
-        conn.execute(
-            "DELETE FROM gatedhouse.actions \
-             WHERE service = $1 AND resource = $2 AND action = $3",
-            &[&service, &resource, &action],
-        )?;
+        sql::write(&*self.database, "PermissionCatalog.remove_action", |tx| {
+            tx.execute(
+                "DELETE FROM gatedhouse.actions \
+                 WHERE service = $1 AND resource = $2 AND action = $3",
+                &[&service, &resource, &action],
+            )?;
+            Ok(())
+        })?;
         self.cache.invalidate_all();
         Ok(())
     }
@@ -195,7 +208,7 @@ impl PermissionCatalog for DefaultPermissionCatalog {
         resource: &str,
         action: &str,
     ) -> Result<bool, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.has_action")?;
         let row = conn.query_opt(
             "SELECT 1 FROM gatedhouse.actions \
              WHERE service = $1 AND resource = $2 AND action = $3",
@@ -205,7 +218,7 @@ impl PermissionCatalog for DefaultPermissionCatalog {
     }
 
     fn list_actions(&self, service: &str, resource: &str) -> Result<Vec<String>, GatedhouseError> {
-        let mut conn = self.database.connection()?;
+        let mut conn = sql::borrow(&*self.database, "PermissionCatalog.list_actions")?;
         let rows = conn.query(
             "SELECT action FROM gatedhouse.actions \
              WHERE service = $1 AND resource = $2 ORDER BY action",

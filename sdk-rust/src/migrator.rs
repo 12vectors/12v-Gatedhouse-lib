@@ -32,7 +32,7 @@ struct Migration {
 pub fn migrate(database: &dyn Database) -> Result<(), GatedhouseError> {
     let migrations = available_migrations()?;
 
-    let mut conn = database.connection()?;
+    let mut conn = crate::sql::borrow(database, "migrate")?;
     acquire_lock(&mut conn)?;
     let lock_result = (|| -> Result<(), GatedhouseError> {
         ensure_bookkeeping(&mut conn)?;
