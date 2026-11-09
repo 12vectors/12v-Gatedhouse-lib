@@ -31,6 +31,12 @@ dependencies = [
     "PyJWT[crypto]>=2.8",
 ]
 
+[project.optional-dependencies]
+# Database.from_uri runs a pool owned by Gatedhouse (recommended for
+# dev/staging). Hosts that pass their own pool via Database.from_pool never
+# need it. 3.2+ for the check= connection validation.
+pool = ["psycopg-pool>=3.2"]
+
 [project.urls]
 Homepage = "https://github.com/12vectors/12v-Gatedhouse-lib"
 Repository = "https://github.com/12vectors/12v-Gatedhouse-lib"

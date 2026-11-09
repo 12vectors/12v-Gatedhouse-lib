@@ -16,7 +16,20 @@ from __future__ import annotations
 
 import sys
 
+import psycopg
+
 from gatedhouse import Database, GatedhouseConfig, GatedhouseFactory
+
+
+class _OneConnection(Database):
+    """One operation, so one plain connection: no pool, and no
+    ``gatedhouse[pool]`` extra needed to run the migration CLI."""
+
+    def __init__(self, conninfo: str) -> None:
+        self._conninfo = conninfo
+
+    def connection(self):
+        return psycopg.connect(self._conninfo)
 
 
 USAGE = (
@@ -35,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     conninfo = args[0]
-    config = GatedhouseConfig(database=Database.from_uri(conninfo))
+    config = GatedhouseConfig(database=_OneConnection(conninfo))
 
     try:
         GatedhouseFactory.migrate(config)

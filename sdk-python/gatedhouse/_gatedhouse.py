@@ -11,10 +11,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from threading import Lock
 
-from psycopg import errors as pg_errors
-
+from . import _sql
 from ._config import GatedhouseConfig
-from ._exceptions import GatedhouseDatabaseError
 from ._group_manager import DefaultGroupManager, GroupManager
 from ._jwt_verification import JwtVerification
 from ._membership_manager import DefaultMembershipManager, MembershipManager
@@ -249,12 +247,12 @@ class DefaultGatedhouse(Gatedhouse):
                            action: str) -> PermissionExplanation:
         params = {"identity": identity_id, "org": org_id,
                   "service": service, "resource": resource, "action": action}
-        try:
-            with self._config.database.connection() as conn, conn.cursor() as cur:
+        def query(conn) -> list:
+            with conn.cursor() as cur:
                 cur.execute(_EXPLAIN_PERMISSION_SQL, params)
-                rows = cur.fetchall()
-        except pg_errors.Error as e:
-            raise GatedhouseDatabaseError(f"explain_permission failed: {e}") from e
+                return cur.fetchall()
+
+        rows = _sql.read(self._config.database, "explain_permission", query)
 
         status_value = rows[0][0]  # the LEFT JOIN always yields a row
         status = None if status_value is None else MembershipStatus.from_db_value(status_value)
@@ -338,8 +336,8 @@ class DefaultGatedhouse(Gatedhouse):
 
     def _load_effective_permissions(self, identity_id: str,
                                     org_id: str) -> list[EffectivePermission]:
-        try:
-            with self._config.database.connection() as conn, conn.cursor() as cur:
+        def query(conn) -> list[EffectivePermission]:
+            with conn.cursor() as cur:
                 cur.execute(
                     _LOAD_EFFECTIVE_PERMISSIONS_SQL,
                     (
@@ -352,10 +350,8 @@ class DefaultGatedhouse(Gatedhouse):
                     EffectivePermission(row[0], row[1], row[2])
                     for row in cur.fetchall()
                 ]
-        except pg_errors.Error as e:
-            raise GatedhouseDatabaseError(
-                f"_load_effective_permissions failed: {e}"
-            ) from e
+
+        return _sql.read(self._config.database, "_load_effective_permissions", query)
 
 
 class _NoOpPermissionCache(PermissionCache):

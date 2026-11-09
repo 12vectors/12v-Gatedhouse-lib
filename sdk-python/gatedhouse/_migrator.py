@@ -17,6 +17,7 @@ from importlib.resources import files
 
 from psycopg import errors as pg_errors
 
+from . import _sql
 from ._database import Database
 from ._exceptions import GatedhouseInitializationError
 
@@ -32,24 +33,35 @@ def migrate(database: Database) -> None:
 
     try:
         with database.connection() as conn:
+            _sql.require_no_open_transaction(conn, "migrate")
+            previous_autocommit = conn.autocommit
             conn.autocommit = True
-            with conn.cursor() as cur:
-                _acquire_lock(cur)
             try:
+                # Session-scoped lock, held across several transactions (one
+                # per migration). Released below; if the session dies
+                # instead, Postgres releases it with the session.
                 with conn.cursor() as cur:
-                    _ensure_bookkeeping(cur)
-                    applied = _applied_versions(cur)
-                for migration in available:
-                    if migration.version in applied:
-                        continue
-                    _apply(conn, migration)
+                    _acquire_lock(cur)
+                try:
+                    with conn.cursor() as cur:
+                        _ensure_bookkeeping(cur)
+                        applied = _applied_versions(cur)
+                    for migration in available:
+                        if migration.version in applied:
+                            continue
+                        _apply(conn, migration)
+                finally:
+                    with conn.cursor() as cur:
+                        _release_lock(cur)
             finally:
-                with conn.cursor() as cur:
-                    _release_lock(cur)
+                # Hand the connection back as the pool gave it to us.
+                conn.autocommit = previous_autocommit
     except pg_errors.Error as e:
+        typed = _sql.classify(f"migrate failed: {e}", e)
+        typed.__cause__ = e
         raise GatedhouseInitializationError(
             f"Gatedhouse migration failed: {e}"
-        ) from e
+        ) from typed
 
 
 # ---- migration discovery -------------------------------------------------

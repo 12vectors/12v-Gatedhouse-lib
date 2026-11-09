@@ -16,7 +16,7 @@ Starlette, Litestar, Quart) use the same-named classes from
 from __future__ import annotations
 
 from ._config import GatedhouseConfig
-from ._database import Database
+from ._database import Database, PooledDatabase
 from ._enums import EntityType, MembershipStatus
 from ._exceptions import (
     GatedhouseDatabaseError,
@@ -58,6 +58,7 @@ from ._web import (
 __all__ = [
     # Config / lifecycle
     "Database",
+    "PooledDatabase",
     "Gatedhouse",
     "GatedhouseConfig",
     "GatedhouseFactory",

@@ -652,7 +652,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     conninfo = args[0]
-    database = Database.from_uri(conninfo)
+    # URL mode: Gatedhouse runs its own (psycopg_pool) pool, closed when the
+    # smoke test ends. Needs the gatedhouse[pool] extra.
+    with Database.from_uri(conninfo) as database:
+        return _run(database)
+
+
+def _run(database: Database) -> int:
     cache = InMemoryPermissionCache()
     config = GatedhouseConfig(database=database, permission_cache=cache)
 

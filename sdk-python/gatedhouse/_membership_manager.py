@@ -16,11 +16,10 @@ import uuid
 from abc import ABC, abstractmethod
 
 import psycopg
-from psycopg import errors as pg_errors
 
+from . import _sql
 from ._database import Database
 from ._enums import EntityType, MembershipStatus
-from ._exceptions import GatedhouseDatabaseError
 from ._permission_cache import PermissionCache
 
 
@@ -86,11 +85,8 @@ class DefaultMembershipManager(MembershipManager):
 
     def create_membership(self, identity_id: str, org_id: str,
                           entity_type: EntityType) -> None:
-        try:
-            # conn.transaction() opens a real transaction block even on an
-            # autocommit (e.g. pooled) connection.
-            with self._database.connection() as conn, conn.transaction(), \
-                    conn.cursor() as cur:
+        def create(conn: psycopg.Connection) -> None:
+            with conn.cursor() as cur:
                 current = _lock_status(cur, identity_id, org_id)
                 if current is MembershipStatus.REMOVED:
                     # Rejoin: same row, clean slate.
@@ -113,45 +109,38 @@ class DefaultMembershipManager(MembershipManager):
                         "        'active'::gatedhouse.membership_status)",
                         (uuid.uuid4(), identity_id, org_id, entity_type.db_value),
                     )
-        except pg_errors.Error as e:
-            raise _fail("create_membership", e) from e
+
+        _sql.write(self._database, "MembershipManager.create_membership", create)
         self._cache.invalidate(identity_id, org_id)
 
     def remove_membership(self, identity_id: str, org_id: str) -> None:
-        try:
-            with self._database.connection() as conn, conn.transaction(), \
-                    conn.cursor() as cur:
+        def remove(conn: psycopg.Connection) -> None:
+            with conn.cursor() as cur:
                 current = _lock_status(cur, identity_id, org_id)
                 if current is not None and current is not MembershipStatus.REMOVED:
                     _update_status(cur, identity_id, org_id, MembershipStatus.REMOVED)
                 # Also when already REMOVED or absent: clears grants that
                 # arrived after an earlier removal.
                 _clear_grants(cur, identity_id, org_id)
-        except pg_errors.Error as e:
-            raise _fail("remove_membership", e) from e
+
+        _sql.write(self._database, "MembershipManager.remove_membership", remove)
         self._cache.invalidate(identity_id, org_id)
 
     def has_membership(self, identity_id: str, org_id: str) -> bool:
-        try:
-            with self._database.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM gatedhouse.memberships "
-                    "WHERE identity_id = %s AND org_id = %s "
-                    "  AND status <> 'removed'",
-                    (identity_id, org_id),
-                )
-                return cur.fetchone() is not None
-        except pg_errors.Error as e:
-            raise _fail("has_membership", e) from e
+        return _sql.read(self._database, "MembershipManager.has_membership", lambda conn: _sql.exists(
+            conn, "SELECT 1 FROM gatedhouse.memberships "
+                "WHERE identity_id = %s AND org_id = %s "
+                "  AND status <> 'removed'",
+                (identity_id, org_id)))
 
     def set_status(self, identity_id: str, org_id: str,
                    status: MembershipStatus) -> None:
         if status is MembershipStatus.REMOVED:
             self.remove_membership(identity_id, org_id)
             return
-        try:
-            with self._database.connection() as conn, conn.transaction(), \
-                    conn.cursor() as cur:
+
+        def update(conn: psycopg.Connection) -> None:
+            with conn.cursor() as cur:
                 current = _lock_status(cur, identity_id, org_id)
                 if current is None:
                     return
@@ -164,39 +153,23 @@ class DefaultMembershipManager(MembershipManager):
                     # Rejoin: clean slate.
                     _clear_grants(cur, identity_id, org_id)
                 _update_status(cur, identity_id, org_id, status)
-        except pg_errors.Error as e:
-            raise _fail("set_status", e) from e
+
+        _sql.write(self._database, "MembershipManager.set_status", update)
         self._cache.invalidate(identity_id, org_id)
 
     def get_status(self, identity_id: str, org_id: str) -> MembershipStatus | None:
-        try:
-            with self._database.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    "SELECT status::TEXT FROM gatedhouse.memberships "
-                    "WHERE identity_id = %s AND org_id = %s",
-                    (identity_id, org_id),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    return None
-                return MembershipStatus.from_db_value(row[0])
-        except pg_errors.Error as e:
-            raise _fail("get_status", e) from e
+        values = _sql.read(self._database, "MembershipManager.get_status", lambda conn: _sql.strings(
+            conn, "SELECT status::TEXT FROM gatedhouse.memberships "
+                  "WHERE identity_id = %s AND org_id = %s",
+            (identity_id, org_id)))
+        return MembershipStatus.from_db_value(values[0]) if values else None
 
     def get_entity_type(self, identity_id: str, org_id: str) -> EntityType | None:
-        try:
-            with self._database.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    "SELECT entity_type::TEXT FROM gatedhouse.memberships "
-                    "WHERE identity_id = %s AND org_id = %s",
-                    (identity_id, org_id),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    return None
-                return EntityType.from_db_value(row[0])
-        except pg_errors.Error as e:
-            raise _fail("get_entity_type", e) from e
+        values = _sql.read(self._database, "MembershipManager.get_entity_type", lambda conn: _sql.strings(
+            conn, "SELECT entity_type::TEXT FROM gatedhouse.memberships "
+                  "WHERE identity_id = %s AND org_id = %s",
+            (identity_id, org_id)))
+        return EntityType.from_db_value(values[0]) if values else None
 
 
 # ---- transaction helpers ---------------------------------------------------
@@ -230,7 +203,3 @@ def _clear_grants(cur: psycopg.Cursor, identity_id: str, org_id: str) -> None:
         "DELETE FROM gatedhouse.group_memberships WHERE identity_id = %s AND org_id = %s",
     ):
         cur.execute(sql, (identity_id, org_id))
-
-
-def _fail(op: str, cause: Exception) -> GatedhouseDatabaseError:
-    return GatedhouseDatabaseError(f"MembershipManager.{op} failed: {cause}")

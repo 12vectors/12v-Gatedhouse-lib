@@ -19,7 +19,27 @@ class GatedhouseInitializationError(GatedhouseError):
 
 
 class GatedhouseDatabaseError(GatedhouseError):
-    """Wraps a psycopg/DB-API failure raised during a Gatedhouse method."""
+    """A Gatedhouse database operation failed. ``kind`` says how, so a host
+    can tell "the database is unavailable, try again later"
+    (``UNAVAILABLE``, typically answered with HTTP 503) apart from a
+    statement the database refused (``QUERY``). The psycopg error is chained
+    as ``__cause__``.
+
+    An authorization check that ends in this error has not granted anything:
+    callers must treat it as a failure, never as "allowed".
+    """
+
+    class Kind(Enum):
+        #: No usable connection: the pool timed out handing one out, the
+        #: database could not be reached, or the connection was lost or shut
+        #: down mid-operation.
+        UNAVAILABLE = "unavailable"
+        #: The database was reached, but refused or failed the statement.
+        QUERY = "query"
+
+    def __init__(self, message: str, *, kind: "GatedhouseDatabaseError.Kind | None" = None) -> None:
+        super().__init__(message)
+        self.kind = kind if kind is not None else GatedhouseDatabaseError.Kind.QUERY
 
 
 class SchemaNotInitializedError(GatedhouseInitializationError):

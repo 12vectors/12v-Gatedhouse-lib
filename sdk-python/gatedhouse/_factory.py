@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from . import _migrator, _schema_check
 from ._config import GatedhouseConfig
-from ._exceptions import GatedhouseInitializationError
+from ._exceptions import GatedhouseDatabaseError, GatedhouseInitializationError
 from ._gatedhouse import DefaultGatedhouse, Gatedhouse
 from ._token_verifier_config import TokenVerifierConfig
 from ._token_verifier_gatedhouse import JustTokenVerifierGatedhouse
@@ -23,7 +23,12 @@ class GatedhouseFactory:
     def create(config: GatedhouseConfig) -> Gatedhouse:
         if config is None:
             raise TypeError("config must not be None")
-        _schema_check.verify(config.database)
+        try:
+            _schema_check.verify(config.database)
+        except GatedhouseDatabaseError as e:
+            raise GatedhouseInitializationError(
+                "Failed to verify Gatedhouse schema against the configured "
+                f"database: {e}") from e
 
         gatedhouse = DefaultGatedhouse(config)
         try:

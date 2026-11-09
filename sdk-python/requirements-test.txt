@@ -1,0 +1,6 @@
+# Test-only dependencies. Not shipped: users get only what pyproject.toml lists.
+# psycopg-pool: the gatedhouse[pool] extra, exercised by Database.from_uri tests.
+psycopg-pool>=3.2
+# SQLAlchemy: runs the documented SQLAlchemy-engine recipe in the connection
+# contract tests, so the README recipe is proven, not just written down.
+SQLAlchemy>=2.0
