@@ -7,6 +7,7 @@ package com.twelvevectors.gatedhouse.cli;
 import com.twelvevectors.gatedhouse.Database;
 import com.twelvevectors.gatedhouse.GatedhouseConfig;
 import com.twelvevectors.gatedhouse.GatedhouseFactory;
+import java.sql.DriverManager;
 
 public final class Migrate {
 
@@ -31,7 +32,9 @@ public final class Migrate {
         String user = args[1];
         String password = args.length == 3 ? args[2] : "";
 
-        Database database = Database.fromUrl(url, user, password);
+        // One operation, so one plain connection: no pool, and no HikariCP
+        // needed to run the migration CLI.
+        Database database = () -> DriverManager.getConnection(url, user, password);
         GatedhouseConfig config = GatedhouseConfig.builder()
             .database(database)
             .build();

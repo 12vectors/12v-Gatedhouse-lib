@@ -18,7 +18,7 @@ public final class GatedhouseFactory {
         Objects.requireNonNull(config, "config");
         try {
             SchemaCheck.verify(config.database());
-        } catch (SQLException e) {
+        } catch (GatedhouseDatabaseException e) {
             throw new GatedhouseInitializationException(
                 "Failed to verify Gatedhouse schema against the configured database.", e);
         }
@@ -51,7 +51,7 @@ public final class GatedhouseFactory {
         Objects.requireNonNull(config, "config");
         try {
             Migrator.migrate(config.database());
-        } catch (SQLException | IOException e) {
+        } catch (SQLException | IOException | GatedhouseDatabaseException e) {
             throw new GatedhouseInitializationException(
                 "Gatedhouse migration failed against the configured database.", e);
         }

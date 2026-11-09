@@ -4,11 +4,6 @@
 
 package com.twelvevectors.gatedhouse;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-
 final class SchemaCheck {
 
     static final int EXPECTED_VERSION = 2;
@@ -16,34 +11,26 @@ final class SchemaCheck {
     private SchemaCheck() {
     }
 
-    static void verify(Database database) throws SQLException {
-        try (Connection conn = database.getConnection()) {
-            if (!schemaVersionsTableExists(conn)) {
-                throw new SchemaNotInitializedException();
+    /**
+     * @throws SchemaNotInitializedException if the schema was never migrated
+     * @throws SchemaOutOfDateException if it is older than this library expects
+     * @throws GatedhouseDatabaseException if the database could not be queried
+     */
+    static void verify(Database database) {
+        Integer current = Sql.<Integer>read(database, "SchemaCheck.verify", conn -> {
+            if (!Sql.exists(conn,
+                    "SELECT 1 FROM information_schema.tables "
+                    + "WHERE table_schema = 'gatedhouse' AND table_name = 'schema_versions'")) {
+                return null;
             }
-            int current = currentVersion(conn);
-            if (current < EXPECTED_VERSION) {
-                throw new SchemaOutOfDateException(current, EXPECTED_VERSION);
-            }
+            return Integer.valueOf(Sql.strings(conn,
+                "SELECT COALESCE(MAX(version), 0)::TEXT FROM gatedhouse.schema_versions").get(0));
+        });
+        if (current == null) {
+            throw new SchemaNotInitializedException();
         }
-    }
-
-    private static boolean schemaVersionsTableExists(Connection conn) throws SQLException {
-        String sql =
-            "SELECT 1 FROM information_schema.tables "
-            + "WHERE table_schema = 'gatedhouse' AND table_name = 'schema_versions'";
-        try (PreparedStatement ps = conn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            return rs.next();
-        }
-    }
-
-    private static int currentVersion(Connection conn) throws SQLException {
-        String sql = "SELECT COALESCE(MAX(version), 0) FROM gatedhouse.schema_versions";
-        try (PreparedStatement ps = conn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            rs.next();
-            return rs.getInt(1);
+        if (current < EXPECTED_VERSION) {
+            throw new SchemaOutOfDateException(current, EXPECTED_VERSION);
         }
     }
 }

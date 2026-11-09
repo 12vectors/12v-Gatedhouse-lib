@@ -4,15 +4,19 @@
 
 package com.twelvevectors.gatedhouse;
 
-import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 final class DefaultRoleManager implements RoleManager {
+
+    /**
+     * Serializes role-inheritance edits across every process and instance
+     * sharing the database, so two concurrent edits cannot each pass the
+     * cycle check and together close a cycle. Transaction-scoped: released
+     * at commit or rollback, never left on a pooled connection.
+     */
+    static final long INHERITANCE_LOCK_KEY = 0x6768726F6C65696EL; // 'ghrolein'
 
     private final Database database;
     private final PermissionCache cache;
@@ -26,29 +30,15 @@ final class DefaultRoleManager implements RoleManager {
 
     @Override
     public void createRole(String key, String name, String description) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.roles (key, name, description, is_system) "
-                 + "VALUES (?, ?, ?, FALSE)")) {
-            ps.setString(1, key);
-            ps.setString(2, name);
-            ps.setString(3, description);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("createRole", e);
-        }
+        Sql.write(database, op("createRole"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.roles (key, name, description, is_system) "
+            + "VALUES (?, ?, ?, FALSE)", key, name, description));
     }
 
     @Override
     public void deleteRole(String key) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.roles WHERE key = ? AND is_system = FALSE")) {
-            ps.setString(1, key);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("deleteRole", e);
-        }
+        Sql.write(database, op("deleteRole"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.roles WHERE key = ? AND is_system = FALSE", key));
         // Cascade dropped every assignment of this role; affected identity
         // set is wide and not worth enumerating.
         cache.invalidateAll();
@@ -56,51 +46,23 @@ final class DefaultRoleManager implements RoleManager {
 
     @Override
     public boolean hasRole(String key) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT 1 FROM gatedhouse.roles WHERE key = ?")) {
-            ps.setString(1, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
-            throw fail("hasRole", e);
-        }
+        return Sql.read(database, op("hasRole"), conn -> Sql.exists(conn,
+            "SELECT 1 FROM gatedhouse.roles WHERE key = ?", key));
     }
 
     @Override
     public List<String> listRoles() {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT key FROM gatedhouse.roles ORDER BY key");
-             ResultSet rs = ps.executeQuery()) {
-            List<String> out = new ArrayList<>();
-            while (rs.next()) {
-                out.add(rs.getString(1));
-            }
-            return out;
-        } catch (SQLException e) {
-            throw fail("listRoles", e);
-        }
+        return Sql.read(database, op("listRoles"), conn -> Sql.strings(conn,
+            "SELECT key FROM gatedhouse.roles ORDER BY key"));
     }
 
     // ---- permission grants -------------------------------------------------
 
     @Override
     public void grantPermission(String roleKey, String service, String resource, String action) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.role_permissions (id, role_key, service, resource, action) "
-                 + "VALUES (?, ?, ?, ?, ?)")) {
-            ps.setObject(1, UUID.randomUUID());
-            ps.setString(2, roleKey);
-            setNullableString(ps, 3, service);
-            setNullableString(ps, 4, resource);
-            setNullableString(ps, 5, action);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("grantPermission", e);
-        }
+        Sql.write(database, op("grantPermission"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.role_permissions (id, role_key, service, resource, action) "
+            + "VALUES (?, ?, ?, ?, ?)", UUID.randomUUID(), roleKey, service, resource, action));
         // Affects every identity holding this role (directly, via group, or
         // via inheritance). Wholesale invalidate.
         cache.invalidateAll();
@@ -109,143 +71,102 @@ final class DefaultRoleManager implements RoleManager {
     @Override
     public void revokePermission(String roleKey, String service, String resource, String action) {
         // Match on COALESCE so NULLs (wildcards) compare correctly.
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.role_permissions "
-                 + "WHERE role_key = ? "
-                 + "  AND COALESCE(service,  '') = COALESCE(?, '') "
-                 + "  AND COALESCE(resource, '') = COALESCE(?, '') "
-                 + "  AND COALESCE(action,   '') = COALESCE(?, '')")) {
-            ps.setString(1, roleKey);
-            setNullableString(ps, 2, service);
-            setNullableString(ps, 3, resource);
-            setNullableString(ps, 4, action);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("revokePermission", e);
-        }
+        Sql.write(database, op("revokePermission"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.role_permissions "
+            + "WHERE role_key = ? "
+            + "  AND COALESCE(service,  '') = COALESCE(?, '') "
+            + "  AND COALESCE(resource, '') = COALESCE(?, '') "
+            + "  AND COALESCE(action,   '') = COALESCE(?, '')",
+            roleKey, service, resource, action));
         cache.invalidateAll();
     }
 
     // ---- role inheritance --------------------------------------------------
 
+    /**
+     * Inheritance must stay acyclic. The check and the insert run in one
+     * transaction under {@link #INHERITANCE_LOCK_KEY}, so concurrent calls
+     * adding {@code A -> B} and {@code B -> A} cannot both succeed.
+     */
     @Override
     public void addParentRole(String childKey, String parentKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.role_inherits (child_key, parent_key) VALUES (?, ?)")) {
-            ps.setString(1, childKey);
-            ps.setString(2, parentKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("addParentRole", e);
-        }
+        Sql.write(database, op("addParentRole"), conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(
+                     "SELECT pg_advisory_xact_lock(?)")) {
+                ps.setLong(1, INHERITANCE_LOCK_KEY);
+                ps.execute();
+            }
+            // Would the new edge close a cycle? Only if the child is already
+            // the parent itself or one of the parent's ancestors.
+            boolean cycle = !childKey.equals(parentKey) && Sql.exists(conn,
+                "WITH RECURSIVE ancestors(key) AS ( "
+                + "    SELECT ?::TEXT "
+                + "    UNION "
+                + "    SELECT ri.parent_key FROM gatedhouse.role_inherits ri "
+                + "    JOIN ancestors a ON ri.child_key = a.key "
+                + ") SELECT 1 FROM ancestors WHERE key = ?",
+                parentKey, childKey);
+            if (cycle) {
+                throw new IllegalArgumentException(
+                    "Role '" + childKey + "' cannot inherit from '" + parentKey + "': '"
+                    + parentKey + "' already inherits from '" + childKey
+                    + "', so this would create an inheritance cycle");
+            }
+            return Sql.update(conn,
+                "INSERT INTO gatedhouse.role_inherits (child_key, parent_key) VALUES (?, ?)",
+                childKey, parentKey);
+        });
         cache.invalidateAll();
     }
 
     @Override
     public void removeParentRole(String childKey, String parentKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.role_inherits WHERE child_key = ? AND parent_key = ?")) {
-            ps.setString(1, childKey);
-            ps.setString(2, parentKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("removeParentRole", e);
-        }
+        Sql.write(database, op("removeParentRole"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.role_inherits WHERE child_key = ? AND parent_key = ?",
+            childKey, parentKey));
         cache.invalidateAll();
     }
 
     @Override
     public List<String> getParentRoles(String childKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT parent_key FROM gatedhouse.role_inherits "
-                 + "WHERE child_key = ? ORDER BY parent_key")) {
-            ps.setString(1, childKey);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<String> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(rs.getString(1));
-                }
-                return out;
-            }
-        } catch (SQLException e) {
-            throw fail("getParentRoles", e);
-        }
+        return Sql.read(database, op("getParentRoles"), conn -> Sql.strings(conn,
+            "SELECT parent_key FROM gatedhouse.role_inherits "
+            + "WHERE child_key = ? ORDER BY parent_key", childKey));
     }
 
     // ---- assignments to identities ----------------------------------------
 
     @Override
     public void assignToIdentity(String identityId, String orgId, String roleKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.role_assignments (id, identity_id, org_id, role_key) "
-                 + "VALUES (?, ?, ?, ?)")) {
-            ps.setObject(1, UUID.randomUUID());
-            ps.setString(2, identityId);
-            ps.setString(3, orgId);
-            ps.setString(4, roleKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("assignToIdentity", e);
-        }
+        Sql.write(database, op("assignToIdentity"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.role_assignments (id, identity_id, org_id, role_key) "
+            + "VALUES (?, ?, ?, ?)", UUID.randomUUID(), identityId, orgId, roleKey));
         cache.invalidate(identityId, orgId);
     }
 
     @Override
     public void revokeFromIdentity(String identityId, String orgId, String roleKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.role_assignments "
-                 + "WHERE identity_id = ? AND org_id = ? AND role_key = ?")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            ps.setString(3, roleKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("revokeFromIdentity", e);
-        }
+        Sql.write(database, op("revokeFromIdentity"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.role_assignments "
+            + "WHERE identity_id = ? AND org_id = ? AND role_key = ?",
+            identityId, orgId, roleKey));
         cache.invalidate(identityId, orgId);
     }
 
     @Override
     public List<String> getIdentityRoles(String identityId, String orgId) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT role_key FROM gatedhouse.role_assignments "
-                 + "WHERE identity_id = ? AND org_id = ? ORDER BY role_key")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<String> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(rs.getString(1));
-                }
-                return out;
-            }
-        } catch (SQLException e) {
-            throw fail("getIdentityRoles", e);
-        }
+        return Sql.read(database, op("getIdentityRoles"), conn -> Sql.strings(conn,
+            "SELECT role_key FROM gatedhouse.role_assignments "
+            + "WHERE identity_id = ? AND org_id = ? ORDER BY role_key", identityId, orgId));
     }
 
     // ---- assignments to groups --------------------------------------------
 
     @Override
     public void assignToGroup(String groupId, String orgId, String roleKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.group_roles (group_id, org_id, role_key) "
-                 + "VALUES (?, ?, ?)")) {
-            ps.setString(1, groupId);
-            ps.setString(2, orgId);
-            ps.setString(3, roleKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("assignToGroup", e);
-        }
+        Sql.write(database, op("assignToGroup"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.group_roles (group_id, org_id, role_key) "
+            + "VALUES (?, ?, ?)", groupId, orgId, roleKey));
         // Affects every member of the group; cache doesn't index by group
         // membership, so wholesale invalidate.
         cache.invalidateAll();
@@ -253,52 +174,22 @@ final class DefaultRoleManager implements RoleManager {
 
     @Override
     public void revokeFromGroup(String groupId, String orgId, String roleKey) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.group_roles "
-                 + "WHERE group_id = ? AND org_id = ? AND role_key = ?")) {
-            ps.setString(1, groupId);
-            ps.setString(2, orgId);
-            ps.setString(3, roleKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("revokeFromGroup", e);
-        }
+        Sql.write(database, op("revokeFromGroup"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.group_roles "
+            + "WHERE group_id = ? AND org_id = ? AND role_key = ?", groupId, orgId, roleKey));
         cache.invalidateAll();
     }
 
     @Override
     public List<String> getGroupRoles(String groupId, String orgId) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT role_key FROM gatedhouse.group_roles "
-                 + "WHERE group_id = ? AND org_id = ? ORDER BY role_key")) {
-            ps.setString(1, groupId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<String> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(rs.getString(1));
-                }
-                return out;
-            }
-        } catch (SQLException e) {
-            throw fail("getGroupRoles", e);
-        }
+        return Sql.read(database, op("getGroupRoles"), conn -> Sql.strings(conn,
+            "SELECT role_key FROM gatedhouse.group_roles "
+            + "WHERE group_id = ? AND org_id = ? ORDER BY role_key", groupId, orgId));
     }
 
     // ---- helpers -----------------------------------------------------------
 
-    private static void setNullableString(PreparedStatement ps, int index, String value)
-            throws SQLException {
-        if (value == null) {
-            ps.setNull(index, java.sql.Types.VARCHAR);
-        } else {
-            ps.setString(index, value);
-        }
-    }
-
-    private static GatedhouseDatabaseException fail(String op, SQLException cause) {
-        return new GatedhouseDatabaseException("RoleManager." + op + " failed", cause);
+    private static String op(String method) {
+        return "RoleManager." + method;
     }
 }

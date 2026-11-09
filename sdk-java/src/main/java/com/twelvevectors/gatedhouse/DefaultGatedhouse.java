@@ -4,10 +4,8 @@
 
 package com.twelvevectors.gatedhouse;
 
-import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -158,50 +156,49 @@ final class DefaultGatedhouse implements Gatedhouse {
             + "LEFT JOIN paths p ON TRUE "
             + "ORDER BY p.source, p.group_id NULLS FIRST, cardinality(p.chain), p.chain";
 
-        try (Connection conn = config.database().getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            ps.setString(3, identityId);
-            ps.setString(4, orgId);
-            ps.setString(5, service);
-            ps.setString(6, resource);
-            ps.setString(7, action);
-            ps.setString(8, identityId);
-            ps.setString(9, orgId);
-            MembershipStatus status = null;
-            List<GrantPath> paths = new ArrayList<>();
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String statusValue = rs.getString("status");
-                    status = statusValue == null ? null : MembershipStatus.fromDbValue(statusValue);
-                    String source = rs.getString("source");
-                    if (source == null) {
-                        continue;  // the LEFT JOIN's placeholder row: no paths
+        return Sql.read(config.database(), "explainPermission", conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, identityId);
+                ps.setString(2, orgId);
+                ps.setString(3, identityId);
+                ps.setString(4, orgId);
+                ps.setString(5, service);
+                ps.setString(6, resource);
+                ps.setString(7, action);
+                ps.setString(8, identityId);
+                ps.setString(9, orgId);
+                MembershipStatus status = null;
+                List<GrantPath> paths = new ArrayList<>();
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String statusValue = rs.getString("status");
+                        status = statusValue == null ? null : MembershipStatus.fromDbValue(statusValue);
+                        String source = rs.getString("source");
+                        if (source == null) {
+                            continue;  // the LEFT JOIN's placeholder row: no paths
+                        }
+                        String[] chain = (String[]) rs.getArray("chain").getArray();
+                        paths.add(new GrantPath(
+                            GrantPath.Source.valueOf(source),
+                            rs.getString("group_id"),
+                            List.of(chain),
+                            new EffectivePermission(
+                                rs.getString("service"), rs.getString("resource"), rs.getString("action"))));
                     }
-                    String[] chain = (String[]) rs.getArray("chain").getArray();
-                    paths.add(new GrantPath(
-                        GrantPath.Source.valueOf(source),
-                        rs.getString("group_id"),
-                        List.of(chain),
-                        new EffectivePermission(
-                            rs.getString("service"), rs.getString("resource"), rs.getString("action"))));
                 }
+                PermissionExplanation.Outcome outcome;
+                if (status == null) {
+                    outcome = PermissionExplanation.Outcome.NO_MEMBERSHIP;
+                } else if (status != MembershipStatus.ACTIVE) {
+                    outcome = PermissionExplanation.Outcome.MEMBERSHIP_NOT_ACTIVE;
+                } else if (paths.isEmpty()) {
+                    outcome = PermissionExplanation.Outcome.NO_MATCHING_GRANT;
+                } else {
+                    outcome = PermissionExplanation.Outcome.ALLOWED;
+                }
+                return new PermissionExplanation(outcome, status, paths);
             }
-            PermissionExplanation.Outcome outcome;
-            if (status == null) {
-                outcome = PermissionExplanation.Outcome.NO_MEMBERSHIP;
-            } else if (status != MembershipStatus.ACTIVE) {
-                outcome = PermissionExplanation.Outcome.MEMBERSHIP_NOT_ACTIVE;
-            } else if (paths.isEmpty()) {
-                outcome = PermissionExplanation.Outcome.NO_MATCHING_GRANT;
-            } else {
-                outcome = PermissionExplanation.Outcome.ALLOWED;
-            }
-            return new PermissionExplanation(outcome, status, paths);
-        } catch (SQLException e) {
-            throw new GatedhouseDatabaseException("explainPermission failed", e);
-        }
+        });
     }
 
     // ---- cache control ----------------------------------------------------
@@ -277,27 +274,26 @@ final class DefaultGatedhouse implements Gatedhouse {
             + "WHERE rp.role_key IN (SELECT role_key FROM all_roles) "
             + "  AND EXISTS (SELECT 1 FROM active_membership)";
 
-        try (Connection conn = config.database().getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            ps.setString(3, identityId);
-            ps.setString(4, orgId);
-            ps.setString(5, identityId);
-            ps.setString(6, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<EffectivePermission> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(new EffectivePermission(
-                        rs.getString(1),
-                        rs.getString(2),
-                        rs.getString(3)));
+        return Sql.read(config.database(), "loadEffectivePermissions", conn -> {
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, identityId);
+                ps.setString(2, orgId);
+                ps.setString(3, identityId);
+                ps.setString(4, orgId);
+                ps.setString(5, identityId);
+                ps.setString(6, orgId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<EffectivePermission> out = new ArrayList<>();
+                    while (rs.next()) {
+                        out.add(new EffectivePermission(
+                            rs.getString(1),
+                            rs.getString(2),
+                            rs.getString(3)));
+                    }
+                    return Collections.unmodifiableList(out);
                 }
-                return Collections.unmodifiableList(out);
             }
-        } catch (SQLException e) {
-            throw new GatedhouseDatabaseException("loadEffectivePermissions failed", e);
-        }
+        });
     }
 
     private static boolean matches(EffectivePermission grant,

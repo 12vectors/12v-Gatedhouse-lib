@@ -29,75 +29,51 @@ final class DefaultMembershipManager implements MembershipManager {
 
     @Override
     public void createMembership(String identityId, String orgId, EntityType entityType) {
-        try (Connection conn = database.getConnection()) {
-            inTransaction(conn, () -> {
-                Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
-                if (current.isPresent() && current.get() == MembershipStatus.REMOVED) {
-                    // Rejoin: same row, clean slate.
-                    clearGrants(conn, identityId, orgId);
-                    try (PreparedStatement ps = conn.prepareStatement(
-                             "UPDATE gatedhouse.memberships "
-                             + "SET status = 'active'::gatedhouse.membership_status, "
-                             + "    entity_type = ?::gatedhouse.entity_type, updated_at = NOW() "
-                             + "WHERE identity_id = ? AND org_id = ?")) {
-                        ps.setString(1, entityType.dbValue());
-                        ps.setString(2, identityId);
-                        ps.setString(3, orgId);
-                        ps.executeUpdate();
-                    }
-                    return;
-                }
-                // No row, or a live one: a live row makes this insert fail
-                // with the unique violation, exactly as before.
-                try (PreparedStatement ps = conn.prepareStatement(
-                         "INSERT INTO gatedhouse.memberships "
-                         + "(id, identity_id, org_id, entity_type, status) "
-                         + "VALUES (?, ?, ?, ?::gatedhouse.entity_type, 'active'::gatedhouse.membership_status)")) {
-                    ps.setObject(1, UUID.randomUUID());
-                    ps.setString(2, identityId);
-                    ps.setString(3, orgId);
-                    ps.setString(4, entityType.dbValue());
-                    ps.executeUpdate();
-                }
-            });
-        } catch (SQLException e) {
-            throw fail("createMembership", e);
-        }
+        Sql.write(database, op("createMembership"), conn -> {
+            Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
+            if (current.isPresent() && current.get() == MembershipStatus.REMOVED) {
+                // Rejoin: same row, clean slate.
+                clearGrants(conn, identityId, orgId);
+                return Sql.update(conn,
+                    "UPDATE gatedhouse.memberships "
+                    + "SET status = 'active'::gatedhouse.membership_status, "
+                    + "    entity_type = ?::gatedhouse.entity_type, updated_at = NOW() "
+                    + "WHERE identity_id = ? AND org_id = ?",
+                    entityType.dbValue(), identityId, orgId);
+            }
+            // No row, or a live one: a live row makes this insert fail
+            // with the unique violation, exactly as before.
+            return Sql.update(conn,
+                "INSERT INTO gatedhouse.memberships "
+                + "(id, identity_id, org_id, entity_type, status) "
+                + "VALUES (?, ?, ?, ?::gatedhouse.entity_type, "
+                + "'active'::gatedhouse.membership_status)",
+                UUID.randomUUID(), identityId, orgId, entityType.dbValue());
+        });
         cache.invalidate(identityId, orgId);
     }
 
     @Override
     public void removeMembership(String identityId, String orgId) {
-        try (Connection conn = database.getConnection()) {
-            inTransaction(conn, () -> {
-                Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
-                if (current.isPresent() && current.get() != MembershipStatus.REMOVED) {
-                    updateStatus(conn, identityId, orgId, MembershipStatus.REMOVED);
-                }
-                // Also when already REMOVED or absent: clears grants that
-                // arrived after an earlier removal.
-                clearGrants(conn, identityId, orgId);
-            });
-        } catch (SQLException e) {
-            throw fail("removeMembership", e);
-        }
+        Sql.write(database, op("removeMembership"), conn -> {
+            Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
+            if (current.isPresent() && current.get() != MembershipStatus.REMOVED) {
+                updateStatus(conn, identityId, orgId, MembershipStatus.REMOVED);
+            }
+            // Also when already REMOVED or absent: clears grants that
+            // arrived after an earlier removal.
+            clearGrants(conn, identityId, orgId);
+            return null;
+        });
         cache.invalidate(identityId, orgId);
     }
 
     @Override
     public boolean hasMembership(String identityId, String orgId) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT 1 FROM gatedhouse.memberships "
-                 + "WHERE identity_id = ? AND org_id = ? AND status <> 'removed'")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
-            throw fail("hasMembership", e);
-        }
+        return Sql.read(database, op("hasMembership"), conn -> Sql.exists(conn,
+            "SELECT 1 FROM gatedhouse.memberships "
+            + "WHERE identity_id = ? AND org_id = ? AND status <> 'removed'",
+            identityId, orgId));
     }
 
     @Override
@@ -106,137 +82,90 @@ final class DefaultMembershipManager implements MembershipManager {
             removeMembership(identityId, orgId);
             return;
         }
-        try (Connection conn = database.getConnection()) {
-            inTransaction(conn, () -> {
-                Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
-                if (current.isEmpty()) {
-                    return;
+        Sql.write(database, op("setStatus"), conn -> {
+            Optional<MembershipStatus> current = lockStatus(conn, identityId, orgId);
+            if (current.isEmpty()) {
+                return null;
+            }
+            if (current.get() == MembershipStatus.REMOVED) {
+                if (status == MembershipStatus.SUSPENDED) {
+                    throw new IllegalStateException(
+                        "Cannot suspend removed membership (" + identityId + ", " + orgId
+                        + "); revive it as ACTIVE or PENDING instead");
                 }
-                if (current.get() == MembershipStatus.REMOVED) {
-                    if (status == MembershipStatus.SUSPENDED) {
-                        throw new IllegalStateException(
-                            "Cannot suspend removed membership (" + identityId + ", " + orgId
-                            + "); revive it as ACTIVE or PENDING instead");
-                    }
-                    // Rejoin: clean slate.
-                    clearGrants(conn, identityId, orgId);
-                }
-                updateStatus(conn, identityId, orgId, status);
-            });
-        } catch (SQLException e) {
-            throw fail("setStatus", e);
-        }
+                // Rejoin: clean slate.
+                clearGrants(conn, identityId, orgId);
+            }
+            updateStatus(conn, identityId, orgId, status);
+            return null;
+        });
         cache.invalidate(identityId, orgId);
     }
 
     @Override
     public Optional<MembershipStatus> getStatus(String identityId, String orgId) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT status::TEXT FROM gatedhouse.memberships "
-                 + "WHERE identity_id = ? AND org_id = ?")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(MembershipStatus.fromDbValue(rs.getString(1)));
-                }
-                return Optional.empty();
+        return Sql.read(database, op("getStatus"), conn -> {
+            try (PreparedStatement ps = Sql.prepare(conn,
+                     "SELECT status::TEXT FROM gatedhouse.memberships "
+                     + "WHERE identity_id = ? AND org_id = ?", identityId, orgId);
+                 ResultSet rs = ps.executeQuery()) {
+                return rs.next()
+                    ? Optional.of(MembershipStatus.fromDbValue(rs.getString(1)))
+                    : Optional.<MembershipStatus>empty();
             }
-        } catch (SQLException e) {
-            throw fail("getStatus", e);
-        }
+        });
     }
 
     @Override
     public Optional<EntityType> getEntityType(String identityId, String orgId) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT entity_type::TEXT FROM gatedhouse.memberships "
-                 + "WHERE identity_id = ? AND org_id = ?")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(EntityType.fromDbValue(rs.getString(1)));
-                }
-                return Optional.empty();
+        return Sql.read(database, op("getEntityType"), conn -> {
+            try (PreparedStatement ps = Sql.prepare(conn,
+                     "SELECT entity_type::TEXT FROM gatedhouse.memberships "
+                     + "WHERE identity_id = ? AND org_id = ?", identityId, orgId);
+                 ResultSet rs = ps.executeQuery()) {
+                return rs.next()
+                    ? Optional.of(EntityType.fromDbValue(rs.getString(1)))
+                    : Optional.<EntityType>empty();
             }
-        } catch (SQLException e) {
-            throw fail("getEntityType", e);
-        }
+        });
     }
 
-    // ---- transaction helpers ------------------------------------------------
+    // ---- helpers -------------------------------------------------------------
 
-    @FunctionalInterface
-    private interface SqlWork {
-        void run() throws SQLException;
-    }
-
-    private static void inTransaction(Connection conn, SqlWork work) throws SQLException {
-        boolean previousAutoCommit = conn.getAutoCommit();
-        conn.setAutoCommit(false);
-        try {
-            work.run();
-            conn.commit();
-        } catch (SQLException | RuntimeException e) {
-            try {
-                conn.rollback();
-            } catch (SQLException rollbackFailure) {
-                e.addSuppressed(rollbackFailure);
-            }
-            throw e;
-        } finally {
-            // Restore for pooled connections.
-            conn.setAutoCommit(previousAutoCommit);
-        }
+    private static String op(String method) {
+        return "MembershipManager." + method;
     }
 
     private static Optional<MembershipStatus> lockStatus(
             Connection conn, String identityId, String orgId) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
+        try (PreparedStatement ps = Sql.prepare(conn,
                  "SELECT status::TEXT FROM gatedhouse.memberships "
-                 + "WHERE identity_id = ? AND org_id = ? FOR UPDATE")) {
-            ps.setString(1, identityId);
-            ps.setString(2, orgId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next()
-                    ? Optional.of(MembershipStatus.fromDbValue(rs.getString(1)))
-                    : Optional.empty();
-            }
+                 + "WHERE identity_id = ? AND org_id = ? FOR UPDATE", identityId, orgId);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next()
+                ? Optional.of(MembershipStatus.fromDbValue(rs.getString(1)))
+                : Optional.empty();
         }
     }
 
     private static void updateStatus(
             Connection conn, String identityId, String orgId, MembershipStatus status)
             throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                 "UPDATE gatedhouse.memberships "
-                 + "SET status = ?::gatedhouse.membership_status, updated_at = NOW() "
-                 + "WHERE identity_id = ? AND org_id = ?")) {
-            ps.setString(1, status.dbValue());
-            ps.setString(2, identityId);
-            ps.setString(3, orgId);
-            ps.executeUpdate();
-        }
+        Sql.update(conn,
+            "UPDATE gatedhouse.memberships "
+            + "SET status = ?::gatedhouse.membership_status, updated_at = NOW() "
+            + "WHERE identity_id = ? AND org_id = ?",
+            status.dbValue(), identityId, orgId);
     }
 
     /** Revokes the identity's direct roles and group memberships in the org. */
     private static void clearGrants(Connection conn, String identityId, String orgId)
             throws SQLException {
-        for (String sql : new String[] {
-                 "DELETE FROM gatedhouse.role_assignments WHERE identity_id = ? AND org_id = ?",
-                 "DELETE FROM gatedhouse.group_memberships WHERE identity_id = ? AND org_id = ?"}) {
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setString(1, identityId);
-                ps.setString(2, orgId);
-                ps.executeUpdate();
-            }
-        }
-    }
-
-    private static GatedhouseDatabaseException fail(String op, SQLException cause) {
-        return new GatedhouseDatabaseException("MembershipManager." + op + " failed", cause);
+        Sql.update(conn,
+            "DELETE FROM gatedhouse.role_assignments WHERE identity_id = ? AND org_id = ?",
+            identityId, orgId);
+        Sql.update(conn,
+            "DELETE FROM gatedhouse.group_memberships WHERE identity_id = ? AND org_id = ?",
+            identityId, orgId);
     }
 }

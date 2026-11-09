@@ -93,6 +93,20 @@
         </dependency>
 
         <!--
+            HikariCP. OPTIONAL: used only by Database.fromUrl, which runs a
+            pool owned by Gatedhouse (recommended for dev/staging). Hosts that
+            pass their own pool via Database.fromDataSource never need it, so
+            it is not added to consumers' dependency trees; a host that calls
+            fromUrl adds it to its own build. Transitive: slf4j-api.
+        -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>6.2.1</version>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
             JUnit 5 for unit tests. Test scope only — no impact on the
             published artifact or its consumer-visible dependency tree.
         -->

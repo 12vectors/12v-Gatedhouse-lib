@@ -4,11 +4,6 @@
 
 package com.twelvevectors.gatedhouse;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.ArrayList;
 import java.util.List;
 
 final class DefaultPermissionCatalog implements PermissionCatalog {
@@ -25,27 +20,15 @@ final class DefaultPermissionCatalog implements PermissionCatalog {
 
     @Override
     public void addService(String service, String description) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.services (service, description) VALUES (?, ?)")) {
-            ps.setString(1, service);
-            ps.setString(2, description);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("addService", e);
-        }
+        Sql.write(database, op("addService"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.services (service, description) VALUES (?, ?)",
+            service, description));
     }
 
     @Override
     public void removeService(String service) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.services WHERE service = ?")) {
-            ps.setString(1, service);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("removeService", e);
-        }
+        Sql.write(database, op("removeService"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.services WHERE service = ?", service));
         // Cascade dropped resources, actions, and any role_permissions
         // referencing them. Affected identity set is wide.
         cache.invalidateAll();
@@ -53,171 +36,81 @@ final class DefaultPermissionCatalog implements PermissionCatalog {
 
     @Override
     public boolean hasService(String service) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT 1 FROM gatedhouse.services WHERE service = ?")) {
-            ps.setString(1, service);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
-            throw fail("hasService", e);
-        }
+        return Sql.read(database, op("hasService"), conn -> Sql.exists(conn,
+            "SELECT 1 FROM gatedhouse.services WHERE service = ?", service));
     }
 
     @Override
     public List<String> listServices() {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT service FROM gatedhouse.services ORDER BY service");
-             ResultSet rs = ps.executeQuery()) {
-            List<String> out = new ArrayList<>();
-            while (rs.next()) {
-                out.add(rs.getString(1));
-            }
-            return out;
-        } catch (SQLException e) {
-            throw fail("listServices", e);
-        }
+        return Sql.read(database, op("listServices"), conn -> Sql.strings(conn,
+            "SELECT service FROM gatedhouse.services ORDER BY service"));
     }
 
     // ---- resources ---------------------------------------------------------
 
     @Override
     public void addResource(String service, String resource, String description) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.resources (service, resource, description) VALUES (?, ?, ?)")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            ps.setString(3, description);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("addResource", e);
-        }
+        Sql.write(database, op("addResource"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.resources (service, resource, description) VALUES (?, ?, ?)",
+            service, resource, description));
     }
 
     @Override
     public void removeResource(String service, String resource) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.resources WHERE service = ? AND resource = ?")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("removeResource", e);
-        }
+        Sql.write(database, op("removeResource"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.resources WHERE service = ? AND resource = ?",
+            service, resource));
         cache.invalidateAll();
     }
 
     @Override
     public boolean hasResource(String service, String resource) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT 1 FROM gatedhouse.resources WHERE service = ? AND resource = ?")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
-            throw fail("hasResource", e);
-        }
+        return Sql.read(database, op("hasResource"), conn -> Sql.exists(conn,
+            "SELECT 1 FROM gatedhouse.resources WHERE service = ? AND resource = ?",
+            service, resource));
     }
 
     @Override
     public List<String> listResources(String service) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT resource FROM gatedhouse.resources WHERE service = ? ORDER BY resource")) {
-            ps.setString(1, service);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<String> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(rs.getString(1));
-                }
-                return out;
-            }
-        } catch (SQLException e) {
-            throw fail("listResources", e);
-        }
+        return Sql.read(database, op("listResources"), conn -> Sql.strings(conn,
+            "SELECT resource FROM gatedhouse.resources WHERE service = ? ORDER BY resource",
+            service));
     }
 
     // ---- actions -----------------------------------------------------------
 
     @Override
     public void addAction(String service, String resource, String action, String description) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "INSERT INTO gatedhouse.actions (service, resource, action, description) "
-                 + "VALUES (?, ?, ?, ?)")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            ps.setString(3, action);
-            ps.setString(4, description);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("addAction", e);
-        }
+        Sql.write(database, op("addAction"), conn -> Sql.update(conn,
+            "INSERT INTO gatedhouse.actions (service, resource, action, description) "
+            + "VALUES (?, ?, ?, ?)", service, resource, action, description));
     }
 
     @Override
     public void removeAction(String service, String resource, String action) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "DELETE FROM gatedhouse.actions "
-                 + "WHERE service = ? AND resource = ? AND action = ?")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            ps.setString(3, action);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw fail("removeAction", e);
-        }
+        Sql.write(database, op("removeAction"), conn -> Sql.update(conn,
+            "DELETE FROM gatedhouse.actions "
+            + "WHERE service = ? AND resource = ? AND action = ?", service, resource, action));
         cache.invalidateAll();
     }
 
     @Override
     public boolean hasAction(String service, String resource, String action) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT 1 FROM gatedhouse.actions "
-                 + "WHERE service = ? AND resource = ? AND action = ?")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            ps.setString(3, action);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
-            throw fail("hasAction", e);
-        }
+        return Sql.read(database, op("hasAction"), conn -> Sql.exists(conn,
+            "SELECT 1 FROM gatedhouse.actions "
+            + "WHERE service = ? AND resource = ? AND action = ?", service, resource, action));
     }
 
     @Override
     public List<String> listActions(String service, String resource) {
-        try (Connection conn = database.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                 "SELECT action FROM gatedhouse.actions "
-                 + "WHERE service = ? AND resource = ? ORDER BY action")) {
-            ps.setString(1, service);
-            ps.setString(2, resource);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<String> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(rs.getString(1));
-                }
-                return out;
-            }
-        } catch (SQLException e) {
-            throw fail("listActions", e);
-        }
+        return Sql.read(database, op("listActions"), conn -> Sql.strings(conn,
+            "SELECT action FROM gatedhouse.actions "
+            + "WHERE service = ? AND resource = ? ORDER BY action", service, resource));
     }
 
     // ---- helpers -----------------------------------------------------------
 
-    private static GatedhouseDatabaseException fail(String op, SQLException cause) {
-        return new GatedhouseDatabaseException("PermissionCatalog." + op + " failed", cause);
+    private static String op(String method) {
+        return "PermissionCatalog." + method;
     }
 }

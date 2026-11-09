@@ -15,6 +15,7 @@ import com.twelvevectors.gatedhouse.GrantPath;
 import com.twelvevectors.gatedhouse.InMemoryPermissionCache;
 import com.twelvevectors.gatedhouse.MembershipStatus;
 import com.twelvevectors.gatedhouse.PermissionExplanation;
+import com.twelvevectors.gatedhouse.PooledDatabase;
 import com.twelvevectors.gatedhouse.PermissionExplanation.Outcome;
 
 import java.sql.Connection;
@@ -60,7 +61,7 @@ public final class SmokeTest {
     public static void main(String[] args) {
         if (args.length < 2 || args.length > 3) {
             System.err.println(
-                "Usage: java -cp gatedhouse-<v>.jar:postgresql-<v>.jar \\\n"
+                "Usage: java -cp gatedhouse-<v>.jar:postgresql-<v>.jar:HikariCP-<v>.jar:slf4j-api-<v>.jar \\\n"
                 + "         com.twelvevectors.gatedhouse.cli.SmokeTest \\\n"
                 + "         <jdbc-url> <user> [password]");
             System.exit(2);
@@ -70,7 +71,9 @@ public final class SmokeTest {
         String user = args[1];
         String password = args.length == 3 ? args[2] : "";
 
-        Database database = Database.fromUrl(url, user, password);
+        // URL mode: Gatedhouse runs its own (HikariCP) pool. Needs HikariCP on
+        // the classpath; closed when the smoke test ends.
+        PooledDatabase database = Database.fromUrl(url, user, password);
         // Hold a reference so the cache scenarios can inspect hits/misses
         // and verify invalidation behavior, not just outcomes.
         InMemoryPermissionCache cache = new InMemoryPermissionCache();
@@ -100,6 +103,7 @@ public final class SmokeTest {
             }
         }
 
+        database.close();
         System.out.printf("%n%d passed, %d failed%n", passed, failed);
         System.exit(failed == 0 ? 0 : 1);
     }

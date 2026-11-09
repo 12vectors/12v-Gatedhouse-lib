@@ -40,20 +40,33 @@ final class Migrator {
     static void migrate(Database database) throws SQLException, IOException {
         List<Migration> available = loadAvailableMigrations();
 
-        try (Connection conn = database.getConnection()) {
+        Connection conn = Sql.borrow(database, "migrate");
+        try (conn) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            if (!previousAutoCommit) {
+                Sql.requireNoOpenTransaction(conn, "migrate");
+            }
             conn.setAutoCommit(true);
-            acquireLock(conn);
             try {
-                ensureBookkeeping(conn);
-                Set<Integer> applied = appliedVersions(conn);
-                for (Migration m : available) {
-                    if (applied.contains(m.version)) {
-                        continue;
+                // Session-scoped lock, held across several transactions (one
+                // per migration). Released below; if the session dies instead,
+                // Postgres releases it with the session.
+                acquireLock(conn);
+                try {
+                    ensureBookkeeping(conn);
+                    Set<Integer> applied = appliedVersions(conn);
+                    for (Migration m : available) {
+                        if (applied.contains(m.version)) {
+                            continue;
+                        }
+                        apply(conn, m);
                     }
-                    apply(conn, m);
+                } finally {
+                    releaseLock(conn);
                 }
             } finally {
-                releaseLock(conn);
+                // Hand the connection back as the pool gave it to us.
+                conn.setAutoCommit(previousAutoCommit);
             }
         }
     }
