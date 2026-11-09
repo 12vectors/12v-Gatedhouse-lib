@@ -64,7 +64,9 @@ impl JwtVerification {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&config.issuer]);
         validation.set_audience(&[&config.audience]);
-        // jsonwebtoken validates exp/nbf by default.
+        // jsonwebtoken validates exp/nbf by default, but with 60 s of leeway;
+        // the Java and Python SDKs apply none, so neither does this one.
+        validation.leeway = 0;
         Self {
             jwks_uri: config.jwks_uri.clone(),
             agent: crate::sphinx_client::agent_with_timeout(config.jwks_timeout),
@@ -408,6 +410,19 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
         assert_eq!(TokenVerificationReason::UnknownKey, reason(v.verify(&token("k1"))));
         assert_eq!(2, idp.requests.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn expired_tokens_are_rejected_without_leeway() {
+        let idp = idp();
+        let v = verifier(&idp);
+        let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+        header.kid = Some("k1".into());
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let claims = serde_json::json!({"sub": "u", "iss": "iss", "aud": "aud", "exp": now - 5});
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_KEY_PEM.as_bytes()).unwrap();
+        let expired = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+        assert_eq!(TokenVerificationReason::Expired, reason(v.verify(&expired)));
     }
 
     #[test]
