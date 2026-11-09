@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: MIT
 # See the LICENSE file in the repository root for the full license text.
 
-"""End-to-end smoke test, ported from the Java ``SmokeTest``. Idempotent
+"""End-to-end smoke test (development tool, not shipped in the wheel),
+ported from the Java ``SmokeTest``. Idempotent
 and self-cleaning — runs against a real Postgres pointed at by the
 supplied conninfo string.
 
 Usage::
 
-    python -m gatedhouse.cli.smoke_test <conninfo>
+    python tests/smoke_test.py <conninfo>
 """
 
 from __future__ import annotations
@@ -636,10 +637,10 @@ def _cleanup(database: _Db) -> None:
 
 
 USAGE = (
-    "Usage: python -m gatedhouse.cli.smoke_test <conninfo>\n"
+    "Usage: python tests/smoke_test.py <conninfo>\n"
     "\n"
     "Example:\n"
-    "  python -m gatedhouse.cli.smoke_test "
+    "  python tests/smoke_test.py "
     "'postgresql://user:pass@localhost:5432/mydb'\n"
 )
 

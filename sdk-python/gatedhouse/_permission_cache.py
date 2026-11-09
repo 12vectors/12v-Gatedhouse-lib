@@ -47,7 +47,11 @@ class PermissionCache(ABC):
 
 class InMemoryPermissionCache(PermissionCache):
     """Default :class:`PermissionCache`: thread-safe, in-process,
-    TTL-expiring dict. Lazy eviction on read.
+    TTL-expiring dict, bounded to ``max_entries`` entries. Expired entries
+    are dropped when read, and swept whenever the cache reaches its bound;
+    if it is still full of live entries, the oldest tenth is evicted. The
+    bound matters because the org ID of a check often comes from the
+    request, so callers could otherwise grow the cache without limit.
 
     Exposes counters for hits, misses, puts, and invalidations as
     runtime observability — and to let tests prove caching behaviour,
@@ -55,13 +59,20 @@ class InMemoryPermissionCache(PermissionCache):
     """
 
     DEFAULT_TTL = timedelta(seconds=60)
+    #: Default bound on cached (identity, org) entries.
+    DEFAULT_MAX_ENTRIES = 10_000
 
     def __init__(
         self,
         ttl: timedelta = DEFAULT_TTL,
         clock: Callable[[], datetime] | None = None,
+        *,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
     ) -> None:
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries < 1:
+            raise ValueError(f"max_entries must be an integer >= 1, got {max_entries!r}")
         self._ttl = ttl
+        self._max_entries = max_entries
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._entries: dict[PermissionCacheKey, _Entry] = {}
         self._lock = Lock()
@@ -70,6 +81,12 @@ class InMemoryPermissionCache(PermissionCache):
         self._puts = 0
         self._targeted_invalidations = 0
         self._wholesale_invalidations = 0
+        self._evictions = 0
+
+    @property
+    def max_entries(self) -> int:
+        """Most (identity, org) entries held at once."""
+        return self._max_entries
 
     # ---- PermissionCache --------------------------------------------------
 
@@ -96,8 +113,22 @@ class InMemoryPermissionCache(PermissionCache):
         # the cache.
         snapshot = list(permissions)
         with self._lock:
+            if len(self._entries) >= self._max_entries and key not in self._entries:
+                self._make_room(expires_at - self._ttl)
+            self._entries.pop(key, None)  # re-insert so the order stays oldest-first
             self._entries[key] = _Entry(snapshot, expires_at)
             self._puts += 1
+
+    def _make_room(self, now: datetime) -> None:
+        """Drops expired entries; if still full, evicts the oldest tenth.
+        Called with the lock held."""
+        before = len(self._entries)
+        for k in [k for k, e in self._entries.items() if now > e.expires_at]:
+            del self._entries[k]
+        excess = len(self._entries) - self._max_entries + max(1, self._max_entries // 10)
+        for k in list(self._entries)[:max(0, excess)]:
+            del self._entries[k]
+        self._evictions += before - len(self._entries)
 
     def invalidate(self, identity_id: str, org_id: str) -> None:
         key = PermissionCacheKey(identity_id, org_id)
@@ -132,6 +163,11 @@ class InMemoryPermissionCache(PermissionCache):
         with self._lock:
             return self._wholesale_invalidations
 
+    def eviction_count(self) -> int:
+        """Entries removed to stay within ``max_entries``."""
+        with self._lock:
+            return self._evictions
+
     def size(self) -> int:
         with self._lock:
             return len(self._entries)
@@ -143,6 +179,7 @@ class InMemoryPermissionCache(PermissionCache):
             self._misses = 0
             self._puts = 0
             self._targeted_invalidations = 0
+            self._evictions = 0
             self._wholesale_invalidations = 0
 
 

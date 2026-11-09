@@ -44,7 +44,6 @@ Issues = "https://github.com/12vectors/12v-Gatedhouse-lib/issues"
 
 [project.scripts]
 gatedhouse-migrate = "gatedhouse.cli.migrate:main"
-gatedhouse-smoketest = "gatedhouse.cli.smoke_test:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["gatedhouse"]
@@ -53,3 +52,5 @@ packages = ["gatedhouse"]
 "gatedhouse/migrations/V001__init.sql" = "gatedhouse/migrations/V001__init.sql"
 "gatedhouse/migrations/V002__membership_removed_status.sql" = "gatedhouse/migrations/V002__membership_removed_status.sql"
 "gatedhouse/migrations/migrations.txt" = "gatedhouse/migrations/migrations.txt"
+# PEP 561: the package ships its type hints.
+"gatedhouse/py.typed" = "gatedhouse/py.typed"

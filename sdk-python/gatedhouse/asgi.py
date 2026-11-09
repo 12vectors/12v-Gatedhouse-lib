@@ -53,16 +53,19 @@ Pure ASGI, stdlib-only — no Starlette or FastAPI dependency. Usage::
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, Awaitable, Callable, MutableMapping
 
 from ._exceptions import TokenVerificationException
 from ._gated_context import GatedContext
 from ._gatedhouse import Gatedhouse
 from ._web import (
+    RETRY_AFTER_SECONDS,
     WWW_AUTHENTICATE_CHALLENGE,
     ForbiddenException,
     UnauthorizedException,
+    bearer_token,
+    error_body,
+    is_outage,
 )
 
 __all__ = [
@@ -118,9 +121,9 @@ def _wrap_send_with_security_headers(send: _Send) -> _Send:
     return wrapped
 
 
-async def _send_json_error(send: _Send, status: int,
-                           error: str, detail: str) -> None:
-    body = json.dumps({"error": error, "detail": detail}).encode("utf-8")
+async def _send_json_error(send: _Send, status: int, error: str,
+                           detail: str, reason: str | None = None) -> None:
+    body = error_body(error, reason, detail)
     headers = [
         (b"content-type", b"application/json; charset=utf-8"),
         (b"content-length", str(len(body)).encode("latin-1")),
@@ -129,6 +132,8 @@ async def _send_json_error(send: _Send, status: int,
     # RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
     if status == 401:
         headers.append(_WWW_AUTHENTICATE)
+    if status == 503:
+        headers.append((b"retry-after", str(RETRY_AFTER_SECONDS).encode("latin-1")))
     await send({
         "type": "http.response.start",
         "status": status,
@@ -137,12 +142,23 @@ async def _send_json_error(send: _Send, status: int,
     await send({"type": "http.response.body", "body": body})
 
 
-async def _reject_websocket(receive: _Receive, send: _Send) -> None:
+async def _send_unavailable(send: _Send) -> None:
+    await _send_json_error(send, 503, "unavailable",
+                           "Token verification is temporarily unavailable",
+                           reason="jwks_unavailable")
+
+
+async def _reject_websocket(receive: _Receive, send: _Send, code: int = 1008) -> None:
     """Refuse a WebSocket handshake: consume ``websocket.connect`` and
-    close with policy-violation code 1008 without invoking the app.
+    close without invoking the app: 1008 (policy violation) for a missing or
+    invalid token, 1013 (try again later) for an identity-provider outage.
     Servers translate a pre-accept close into a rejected handshake."""
     await receive()
-    await send({"type": "websocket.close", "code": 1008})
+    await send({"type": "websocket.close", "code": code})
+
+
+#: WebSocket close code for an identity-provider outage ("try again later").
+_WS_TRY_AGAIN_LATER = 1013
 
 
 async def _send_redirect(send: _Send, location: str) -> None:
@@ -176,7 +192,11 @@ async def _verify_off_loop(gatedhouse: Gatedhouse, token: str) -> Any:
 
 class GatedhouseApiFilter:
     """ASGI API security middleware enforcing ``Authorization: Bearer``
-    token validation. On failure, returns a clean 401 JSON response."""
+    token validation. A missing or invalid token gets a 401 JSON response
+    with a stable ``reason`` code; an identity-provider outage gets a 503
+    with ``Retry-After``. ``ForbiddenException`` / ``UnauthorizedException``
+    raised by the application before it starts its response become 403 /
+    401; every other application exception propagates unchanged."""
 
     CONTEXT_ATTR = CONTEXT_ATTR
 
@@ -196,38 +216,61 @@ class GatedhouseApiFilter:
             await self._app(scope, receive, send)
             return
 
-        auth = _header(scope, b"authorization")
-        if auth is None or not auth.startswith("Bearer "):
+        token = bearer_token(_header(scope, b"authorization"))
+        if token is None:
             await _send_json_error(send, 401, "unauthorized",
-                                   "Missing or invalid Bearer token")
+                                   "Missing or invalid Bearer token",
+                                   reason="missing_token")
             return
 
-        token = auth[7:].strip()
+        # Only verification is guarded. Other errors from verify_token (e.g.
+        # no verifier configured) are server faults and propagate.
         try:
             subject = await _verify_off_loop(self._gatedhouse, token)
         except TokenVerificationException as e:
-            await _send_json_error(send, 401, "unauthorized",
-                                   f"Token verification failed: {e}")
-            return
-        except Exception:
-            await _send_json_error(send, 401, "unauthorized",
-                                   "Authentication failed")
+            if is_outage(e):
+                await _send_unavailable(send)
+            else:
+                await _send_json_error(send, 401, "unauthorized",
+                                       "Token verification failed",
+                                       reason=e.reason.value)
             return
 
         _attach_context(scope, GatedContext.from_subject(subject))
-        await self._app(scope, receive, _wrap_send_with_security_headers(send))
+        started = False
+        secured = _wrap_send_with_security_headers(send)
+
+        async def tracking_send(message: MutableMapping[str, Any]) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await secured(message)
+
+        # The application runs outside the verification guard; only this
+        # module's helper exceptions are translated, and only before the
+        # response has started.
+        try:
+            await self._app(scope, receive, tracking_send)
+        except ForbiddenException as e:
+            if started:
+                raise
+            await _send_json_error(send, 403, "forbidden", str(e))
+        except UnauthorizedException as e:
+            if started:
+                raise
+            await _send_json_error(send, 401, "unauthorized", str(e))
 
     async def _handle_websocket(self, scope: _Scope, receive: _Receive,
                                 send: _Send) -> None:
-        auth = _header(scope, b"authorization")
-        if auth is None or not auth.startswith("Bearer "):
+        token = bearer_token(_header(scope, b"authorization"))
+        if token is None:
             await _reject_websocket(receive, send)
             return
         try:
-            subject = await _verify_off_loop(self._gatedhouse,
-                                             auth[7:].strip())
-        except Exception:
-            await _reject_websocket(receive, send)
+            subject = await _verify_off_loop(self._gatedhouse, token)
+        except TokenVerificationException as e:
+            await _reject_websocket(
+                receive, send, _WS_TRY_AGAIN_LATER if is_outage(e) else 1008)
             return
         _attach_context(scope, GatedContext.from_subject(subject))
         await self._app(scope, receive, send)
@@ -306,15 +349,21 @@ class GatedhouseWebFilter:
             return
 
         try:
-            subject = await _verify_off_loop(self._gatedhouse, token)
-        except TokenVerificationException:
-            # Token is invalid or expired — remove it from the session
+            subject = await _verify_off_loop(self._gatedhouse, str(token).strip())
+        except TokenVerificationException as e:
+            if is_outage(e):
+                # The identity provider is down: keep the session (the token
+                # may be perfectly valid) and do not redirect to a login page
+                # that cannot work either.
+                if is_websocket:
+                    await _reject_websocket(receive, send, _WS_TRY_AGAIN_LATER)
+                else:
+                    await _send_unavailable(send)
+                return
+            # Token is invalid or expired: remove it from the session
             # before denying.
             if session is not None:
                 session.pop(self._session_token_attr, None)
-            await self._deny(scope, receive, send, is_websocket)
-            return
-        except Exception:
             await self._deny(scope, receive, send, is_websocket)
             return
 

@@ -38,8 +38,10 @@ T = TypeVar("T")
 
 _Kind = GatedhouseDatabaseError.Kind
 
-#: Server shut down / not accepting connections; class 08 is checked by prefix.
-_UNAVAILABLE_STATES = frozenset({"57P01", "57P02", "57P03"})
+#: Transient conditions: statement timeout or cancellation, server shut down
+#: or not accepting connections. Classes 08 (connection exception) and 53
+#: (insufficient resources) are checked by prefix.
+_UNAVAILABLE_STATES = frozenset({"57014", "57P01", "57P02", "57P03"})
 
 
 def read(database: Database, op: str, work: Callable[[psycopg.Connection], T]) -> T:
@@ -96,12 +98,13 @@ def _run(database: Database, op: str, work: Callable[[psycopg.Connection], T],
 
 
 def classify(message: str, cause: pg_errors.Error) -> GatedhouseDatabaseError:
-    """SQLSTATE class 08 and 57P01-57P03 mean the database went away, as does
-    a client-side operational failure with no SQLSTATE (connection lost, pool
-    timeout); anything else is the statement failing."""
+    """Transient conditions are UNAVAILABLE: SQLSTATE class 08, class 53,
+    57014 and 57P01-57P03, and a client-side operational failure with no
+    SQLSTATE (connection lost, pool timeout). Anything else is the statement
+    failing."""
     state = getattr(cause, "sqlstate", None)
     unavailable = (
-        (state is not None and (state.startswith("08") or state in _UNAVAILABLE_STATES))
+        (state is not None and (state.startswith(("08", "53")) or state in _UNAVAILABLE_STATES))
         or (state is None and isinstance(cause, pg_errors.OperationalError))
     )
     return GatedhouseDatabaseError(

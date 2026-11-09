@@ -27,6 +27,9 @@ already inside a transaction rather than commit the caller's work.
 from __future__ import annotations
 
 import inspect
+import threading
+import time
+import weakref
 from abc import ABC, abstractmethod
 from typing import Any, ContextManager
 
@@ -78,7 +81,8 @@ class Database(ABC):
 
     @staticmethod
     def from_uri(conninfo: str, *, max_size: int = 10, timeout: float = 10.0,
-                 max_lifetime: float = 1800.0) -> "PooledDatabase":
+                 max_lifetime: float = 1800.0,
+                 statement_timeout: float = 30.0) -> "PooledDatabase":
         """Runs a pool owned by Gatedhouse. Recommended for development and
         staging; in production, pass your application's pool with
         :meth:`from_pool`.
@@ -91,10 +95,14 @@ class Database(ABC):
         :param timeout: longest, in seconds, an operation waits for a free
             connection before failing with ``Kind.UNAVAILABLE``.
         :param max_lifetime: seconds after which a connection is retired.
+        :param statement_timeout: longest, in seconds, any statement may run
+            before PostgreSQL cancels it (then ``Kind.UNAVAILABLE``); ``0``
+            means no limit. Set on the pool's own sessions only.
         :raises ImportError: if ``psycopg_pool`` is not installed.
         """
         return PooledDatabase(conninfo, max_size=max_size, timeout=timeout,
-                              max_lifetime=max_lifetime)
+                              max_lifetime=max_lifetime,
+                              statement_timeout=statement_timeout)
 
 
 class _PoolDatabase(Database):
@@ -119,13 +127,20 @@ class PooledDatabase(Database):
     DEFAULT_MAX_SIZE = 10
     DEFAULT_TIMEOUT = 10.0
     DEFAULT_MAX_LIFETIME = 1800.0
+    DEFAULT_STATEMENT_TIMEOUT = 30.0
+    #: A connection returned within this many seconds is handed out without
+    #: a liveness check (HikariCP's default), saving a round trip per
+    #: operation under load; an idle one is checked first.
+    ALIVE_BYPASS_WINDOW = 0.5
 
     def __init__(self, conninfo: str, *, max_size: int = DEFAULT_MAX_SIZE,
                  timeout: float = DEFAULT_TIMEOUT,
-                 max_lifetime: float = DEFAULT_MAX_LIFETIME) -> None:
+                 max_lifetime: float = DEFAULT_MAX_LIFETIME,
+                 statement_timeout: float = DEFAULT_STATEMENT_TIMEOUT) -> None:
         _require_number("max_size", max_size, minimum=1, integer=True)
         _require_number("timeout", timeout, minimum=0.25)
         _require_number("max_lifetime", max_lifetime, minimum=30)
+        _require_number("statement_timeout", statement_timeout, minimum=0)
         try:
             from psycopg_pool import ConnectionPool
         except ImportError as e:
@@ -134,14 +149,37 @@ class PooledDatabase(Database):
                 "optional dependency of gatedhouse. Install it with "
                 "pip install 'gatedhouse[pool]', or pass your application's pool "
                 "with Database.from_pool(...).") from e
+        timeout_ms = int(statement_timeout * 1000)
+        returned_at: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        lock = threading.Lock()
+
+        def configure(conn: psycopg.Connection) -> None:
+            # The pool is Gatedhouse's own, so its sessions may carry settings.
+            conn.execute(f"SET statement_timeout = {timeout_ms}")
+            if not conn.autocommit:
+                conn.commit()
+
+        def reset(conn: psycopg.Connection) -> None:
+            with lock:
+                returned_at[conn] = time.monotonic()
+
+        def check(conn: psycopg.Connection) -> None:
+            with lock:
+                last = returned_at.get(conn)
+            if last is None or time.monotonic() - last >= self.ALIVE_BYPASS_WINDOW:
+                ConnectionPool.check_connection(conn)
+
         self._pool = ConnectionPool(
             conninfo,
             min_size=1,
             max_size=max_size,
             timeout=timeout,
             max_lifetime=max_lifetime,
-            # Hand out only connections that still work.
-            check=ConnectionPool.check_connection,
+            configure=configure,
+            reset=reset,
+            # Hand out only connections that still work; recently used ones
+            # are known to.
+            check=check,
             name="gatedhouse",
             # Opening must not fail just because the database is briefly
             # unreachable; the first operation reports it.

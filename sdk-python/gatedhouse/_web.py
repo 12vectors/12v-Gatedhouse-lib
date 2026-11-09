@@ -30,6 +30,7 @@ counterparts in :mod:`gatedhouse.asgi` instead of adapting these.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Callable, Iterable, MutableMapping
 
 from ._exceptions import TokenVerificationException
@@ -70,24 +71,69 @@ def _with_security_headers(start_response: Callable) -> Callable:
     return wrapped
 
 
-def _send_json_error(start_response: Callable, status: str,
-                     error: str, detail: str) -> Iterable[bytes]:
-    body = json.dumps({"error": error, "detail": detail}).encode("utf-8")
+#: Seconds a client should wait before retrying after a 503.
+RETRY_AFTER_SECONDS = 30
+
+
+def bearer_token(authorization: str | None) -> str | None:
+    """The token from an ``Authorization`` header, or ``None``. The scheme is
+    matched case-insensitively (RFC 7235 section 2.1)."""
+    if authorization is None or authorization[:7].lower() != "bearer ":
+        return None
+    return authorization[7:].strip() or None
+
+
+def is_outage(e: TokenVerificationException) -> bool:
+    """An identity-provider outage is our failure, not the caller's."""
+    return e.reason is TokenVerificationException.Reason.JWKS_UNAVAILABLE
+
+
+def error_body(error: str, reason: str | None, detail: str) -> bytes:
+    """The JSON error body, byte-identical to the Java and Rust SDKs: 401
+    bodies name a stable ``reason`` code, never the verifier's internal
+    message (which can include the IdP's URL or network errors)."""
+    payload: dict[str, str] = {"error": error}
+    if reason is not None:
+        payload["reason"] = reason
+    payload["detail"] = detail
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+UNAVAILABLE_BODY = error_body("unavailable", "jwks_unavailable",
+                              "Token verification is temporarily unavailable")
+
+
+def _send_json_error(start_response: Callable, status: str, error: str,
+                     detail: str, reason: str | None = None,
+                     exc_info: Any = None) -> Iterable[bytes]:
+    body = error_body(error, reason, detail)
     headers = [
         ("Content-Type", "application/json; charset=utf-8"),
         ("Content-Length", str(len(body))),
         *_SECURITY_HEADERS,
     ]
-    # RFC 7235 §4.1 requires a challenge on 401 only; 403 stays bare.
+    # RFC 7235 §4.1 requires a challenge on 401 only; 403 and 503 stay bare.
     if status.startswith("401"):
         headers.append(("WWW-Authenticate", WWW_AUTHENTICATE_CHALLENGE))
-    start_response(status, headers)
+    if status.startswith("503"):
+        headers.append(("Retry-After", str(RETRY_AFTER_SECONDS)))
+    start_response(status, headers, exc_info)
     return [body]
+
+
+def _send_unavailable(start_response: Callable) -> Iterable[bytes]:
+    return _send_json_error(start_response, "503 Service Unavailable", "unavailable",
+                            "Token verification is temporarily unavailable",
+                            reason="jwks_unavailable")
 
 
 class GatedhouseApiFilter:
     """API security middleware enforcing ``Authorization: Bearer`` token
-    validation. On failure, returns a clean 401 JSON response."""
+    validation. A missing or invalid token gets a 401 JSON response with a
+    stable ``reason`` code; an identity-provider outage gets a 503 with
+    ``Retry-After``. ``ForbiddenException`` / ``UnauthorizedException``
+    raised by the application (via ``require_admin`` etc.) become 403 / 401;
+    every other application exception propagates unchanged."""
 
     CONTEXT_ATTR = CONTEXT_ATTR
 
@@ -98,25 +144,34 @@ class GatedhouseApiFilter:
         self._gatedhouse = gatedhouse
 
     def __call__(self, environ: dict, start_response: Callable) -> Iterable[bytes]:
-        auth = environ.get("HTTP_AUTHORIZATION")
-        if auth is None or not auth.startswith("Bearer "):
+        token = bearer_token(environ.get("HTTP_AUTHORIZATION"))
+        if token is None:
             return _send_json_error(start_response, "401 Unauthorized",
-                                    "unauthorized",
-                                    "Missing or invalid Bearer token")
+                                    "unauthorized", "Missing or invalid Bearer token",
+                                    reason="missing_token")
 
-        token = auth[7:].strip()
+        # Only verification is guarded. Other errors from verify_token (e.g.
+        # no verifier configured) are server faults and propagate.
         try:
             subject = self._gatedhouse.verify_token(token)
         except TokenVerificationException as e:
+            if is_outage(e):
+                return _send_unavailable(start_response)
             return _send_json_error(start_response, "401 Unauthorized",
-                                    "unauthorized",
-                                    f"Token verification failed: {e}")
-        except Exception:
-            return _send_json_error(start_response, "401 Unauthorized",
-                                    "unauthorized", "Authentication failed")
+                                    "unauthorized", "Token verification failed",
+                                    reason=e.reason.value)
 
         environ[CONTEXT_ATTR] = GatedContext.from_subject(subject)
-        return self._app(environ, _with_security_headers(start_response))
+        # The application runs outside the verification guard; only this
+        # module's helper exceptions are translated.
+        try:
+            return self._app(environ, _with_security_headers(start_response))
+        except ForbiddenException as e:
+            return _send_json_error(start_response, "403 Forbidden", "forbidden",
+                                    str(e), exc_info=sys.exc_info())
+        except UnauthorizedException as e:
+            return _send_json_error(start_response, "401 Unauthorized", "unauthorized",
+                                    str(e), exc_info=sys.exc_info())
 
     # ---- request helpers (mirror the Java statics) -------------------------
 
@@ -183,14 +238,17 @@ class GatedhouseWebFilter:
             return self._login_redirect(environ, start_response)
 
         try:
-            subject = self._gatedhouse.verify_token(token)
-        except TokenVerificationException:
-            # Token is invalid or expired — remove it from the session
-            # and redirect.
+            subject = self._gatedhouse.verify_token(str(token).strip())
+        except TokenVerificationException as e:
+            if is_outage(e):
+                # The identity provider is down: keep the session (the token
+                # may be perfectly valid) and do not bounce the user to a
+                # login page that cannot work either.
+                return _send_unavailable(start_response)
+            # Token is invalid or expired: remove it from the session and
+            # redirect.
             if session is not None:
                 session.pop(self._session_token_attr, None)
-            return self._login_redirect(environ, start_response)
-        except Exception:
             return self._login_redirect(environ, start_response)
 
         environ[CONTEXT_ATTR] = GatedContext.from_subject(subject)
