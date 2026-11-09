@@ -13,10 +13,12 @@ from dataclasses import dataclass
 class TokenVerifierConfig:
     """Settings for ``Gatedhouse.verify_token``.
 
-    For a Sphinx deployment, ``jwks_uri`` is typically
-    ``https://<sphinx-host>/api/sphinx/v1/.well-known/jwks.json``,
-    ``issuer`` matches Sphinx's ``JWT_ISSUER``, and ``audience`` matches
-    its ``JWT_AUDIENCE``.
+    For a Sphinx deployment, ``jwks_uri`` is
+    ``https://<sphinx-host>/api/sphinx/v1/auth/jwks``, ``issuer`` is the
+    literal ``"sphinx"`` (Sphinx access tokens carry ``iss="sphinx"``;
+    its ``OIDC_ISSUER`` URL applies only to OIDC id_tokens), and
+    ``audience`` is your app's ``client_id`` as registered in Sphinx
+    (access tokens set ``aud`` to the client id).
     """
 
     jwks_uri: str

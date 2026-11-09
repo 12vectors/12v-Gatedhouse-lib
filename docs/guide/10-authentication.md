@@ -5,17 +5,17 @@ compatible) against its JWKS.
 
 ## Configuration
 
-| Setting | Required | Default |
-|---|---|---|
-| JWKS URI | yes | |
-| issuer (`iss`) | yes | |
-| audience (`aud`) | yes | |
-| JWKS fetch timeout | no | 5 s |
+| Setting | Required | Default | Sphinx value |
+|---|---|---|---|
+| JWKS URI | yes | | `https://<sphinx-host>/api/sphinx/v1/auth/jwks` |
+| issuer (`iss`) | yes | | literal `sphinx` (the `OIDC_ISSUER` URL is only for OIDC id_tokens) |
+| audience (`aud`) | yes | | the app's `client_id` registered in Sphinx |
+| JWKS fetch timeout | no | 5 s | |
 
 ```java
 .tokenVerifier(TokenVerifierConfig.builder()
-    .jwksUri(URI.create("https://sso.example.com/api/sphinx/v1/.well-known/jwks.json"))
-    .issuer("https://sso.example.com").audience("my-platform")
+    .jwksUri(URI.create("https://sso.example.com/api/sphinx/v1/auth/jwks"))
+    .issuer("sphinx").audience("my-app-client-id")
     .jwksTimeout(Duration.ofSeconds(5)).build())
 ```
 ```python
