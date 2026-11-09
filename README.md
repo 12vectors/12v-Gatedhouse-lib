@@ -31,10 +31,12 @@ The same workflow in each language. Pick one:
 ### Java
 
 ```java
-Database database = Database.fromUrl("jdbc:postgresql://localhost:5432/mydb", "user", "pwd");
-GatedhouseConfig config = GatedhouseConfig.builder().database(database).build();
-
-try (Gatedhouse gh = GatedhouseFactory.create(config)) {
+// Development: Gatedhouse runs its own pool (needs HikariCP). Production:
+// Database.fromDataSource(yourPool). See SKILLS.md, "Connecting to the Database".
+try (PooledDatabase database = Database.fromUrl(
+         "jdbc:postgresql://localhost:5432/mydb", "user", "pwd");
+     Gatedhouse gh = GatedhouseFactory.create(
+         GatedhouseConfig.builder().database(database).build())) {
     gh.permissionCatalog().addService("workspace", "Workspace");
     gh.permissionCatalog().addResource("workspace", "projects", "Project");
     gh.permissionCatalog().addAction("workspace", "projects", "read", "Read project");
@@ -153,10 +155,10 @@ let tokens = sphinx.exchange_code(&code, "http://localhost:8000/auth/callback")?
 ```python
 from gatedhouse import Database, EntityType, GatedhouseConfig, GatedhouseFactory
 
-database = Database.from_uri("postgresql://user:pwd@localhost:5432/mydb")
-config = GatedhouseConfig(database=database)
-
-with GatedhouseFactory.create(config) as gh:
+# Development: Gatedhouse runs its own pool (pip install "gatedhouse[pool]").
+# Production: Database.from_pool(your_pool). See SKILLS.md, "Connecting to the Database".
+with Database.from_uri("postgresql://user:pwd@localhost:5432/mydb") as database, \
+        GatedhouseFactory.create(GatedhouseConfig(database=database)) as gh:
     gh.permission_catalog().add_service("workspace", "Workspace")
     gh.permission_catalog().add_resource("workspace", "projects", "Project")
     gh.permission_catalog().add_action("workspace", "projects", "read", "Read project")
@@ -175,12 +177,14 @@ with GatedhouseFactory.create(config) as gh:
 ```rust
 use std::sync::Arc;
 use gatedhouse::{
-    ConninfoDatabase, Database, EntityType, GatedhouseConfig, GatedhouseFactory,
+    Database, EntityType, GatedhouseConfig, GatedhouseFactory, PooledDatabase,
 };
 
-let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(
+// Development: Gatedhouse runs its own pool (feature "r2d2"). Production: your
+// r2d2 pool, or any pool via gatedhouse::from_fn. See SKILLS.md, "Connecting to the Database".
+let database: Arc<dyn Database> = Arc::new(PooledDatabase::from_url(
     "host=localhost user=user password=pwd dbname=mydb",
-));
+)?);
 let config = GatedhouseConfig::builder(database).build();
 let gh = GatedhouseFactory::create(config)?;
 

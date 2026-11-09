@@ -1,0 +1,132 @@
+# Copyright (c) 2026 12vectors.com
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the repository root for the full license text.
+
+# Tests all three SDKs against a real PostgreSQL. Builds and tests only:
+# nothing is published (publishing is release.yml, run by hand).
+#
+# Each job gets its own PostgreSQL service, so the SDKs never share state.
+# The contract tests fail (rather than skip) here if the database variable
+# is missing.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PGUSER: gh
+  PGPASSWORD: gh
+  PGDATABASE: gatedhouse_test
+
+jobs:
+  java:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gh
+          POSTGRES_PASSWORD: gh
+          POSTGRES_DB: gatedhouse_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gh" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: sdk-java
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+      - name: Unit and connection contract tests
+        env:
+          GATEDHOUSE_TEST_JDBC_URL: jdbc:postgresql://localhost:5432/gatedhouse_test?user=gh&password=gh
+        run: mvn --batch-mode test
+      - name: Smoke test (through Database.fromUrl's pool)
+        run: |
+          mvn --batch-mode -q dependency:build-classpath -Dmdep.outputFile=cp.txt
+          java -cp "target/classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.Migrate \
+            jdbc:postgresql://localhost:5432/gatedhouse_test gh gh
+          java -cp "target/classes:$(cat cp.txt)" com.twelvevectors.gatedhouse.cli.SmokeTest \
+            jdbc:postgresql://localhost:5432/gatedhouse_test gh gh
+
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gh
+          POSTGRES_PASSWORD: gh
+          POSTGRES_DB: gatedhouse_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gh" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: sdk-python
+    env:
+      GATEDHOUSE_TEST_DATABASE_URL: postgresql://gh:gh@localhost:5432/gatedhouse_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package with the pool extra, plus test-only dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[pool]' -r requirements-test.txt
+      - name: Unit, connection contract and SQLAlchemy recipe tests
+        run: |
+          python -c "import sqlalchemy, psycopg_pool"  # the recipe test must not be skipped
+          python -m unittest discover -s tests -v
+      - name: Smoke test (through Database.from_uri's pool)
+        run: |
+          python -m gatedhouse.cli.migrate "$GATEDHOUSE_TEST_DATABASE_URL"
+          python -m gatedhouse.cli.smoke_test "$GATEDHOUSE_TEST_DATABASE_URL"
+
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gh
+          POSTGRES_PASSWORD: gh
+          POSTGRES_DB: gatedhouse_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gh" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: sdk-rust
+    env:
+      GATEDHOUSE_TEST_DATABASE_URL: host=localhost port=5432 user=gh password=gh dbname=gatedhouse_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Build and test without optional features
+        run: cargo test
+      - name: Build and test with the r2d2 feature (connection contract tests)
+        run: cargo test --features r2d2
+      - name: Clippy
+        run: cargo clippy --features r2d2 --all-targets -- -D warnings
+      - name: Smoke test (through PooledDatabase::from_url)
+        run: |
+          cargo run --bin gatedhouse-migrate -- "$GATEDHOUSE_TEST_DATABASE_URL"
+          cargo run --features r2d2 --bin gatedhouse-smoke-test -- "$GATEDHOUSE_TEST_DATABASE_URL"

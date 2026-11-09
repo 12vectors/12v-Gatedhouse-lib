@@ -23,15 +23,16 @@ Embedded authorization library. Provides RBAC with role inheritance, group-based
 3. [Core Concepts](#core-concepts)
 4. [Database Schema](#database-schema)
 5. [Public API Surface](#public-api-surface)
-6. [Step-by-Step Setup](#step-by-step-setup)
-7. [Authorization Decision Flow](#authorization-decision-flow)
-8. [Authentication via Sphinx (JWT verification)](#authentication-via-sphinx-jwt-verification)
-9. [Pluggable Group Source](#pluggable-group-source)
-10. [Permission Cache](#permission-cache)
-11. [Audit Log](#audit-log)
-12. [Use Cases](#use-cases)
-13. [Best Practices](#best-practices)
-14. [Troubleshooting](#troubleshooting)
+6. [Connecting to the Database](#connecting-to-the-database)
+7. [Step-by-Step Setup](#step-by-step-setup)
+8. [Authorization Decision Flow](#authorization-decision-flow)
+9. [Authentication via Sphinx (JWT verification)](#authentication-via-sphinx-jwt-verification)
+10. [Pluggable Group Source](#pluggable-group-source)
+11. [Permission Cache](#permission-cache)
+12. [Audit Log](#audit-log)
+13. [Use Cases](#use-cases)
+14. [Best Practices](#best-practices)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -47,19 +48,27 @@ Embedded authorization library. Provides RBAC with role inheritance, group-based
   <artifactId>gatedhouse</artifactId>
   <version>0.3.0</version>
 </dependency>
+<!-- Only for Database.fromUrl (Gatedhouse-owned pool, dev/staging): -->
+<dependency>
+  <groupId>com.zaxxer</groupId>
+  <artifactId>HikariCP</artifactId>
+  <version>6.2.1</version>
+</dependency>
 ```
 
 **Python** (`pyproject.toml` / `pip`) — Python 3.10+, brings `psycopg`, `PyJWT[crypto]`:
 
 ```bash
 pip install gatedhouse        # or: pip install -e ./sdk-python
+pip install 'gatedhouse[pool]'   # adds psycopg_pool, only for Database.from_uri
 ```
 
 **Rust** (`Cargo.toml`) — Rust 1.74+, brings `postgres`, `jsonwebtoken`, `ureq`, `uuid`, `serde`:
 
 ```toml
 [dependencies]
-gatedhouse = { path = "./sdk-rust" }
+# feature "r2d2": use an r2d2 pool as the Database, and PooledDatabase::from_url
+gatedhouse = { path = "./sdk-rust", features = ["r2d2"] }
 ```
 
 ### 2. Run the migration once per database
@@ -82,6 +91,8 @@ cargo run --bin gatedhouse-migrate -- \
 
 ### 3. Initialize and use
 
+These examples let Gatedhouse run its own pool from a URL, which suits development and staging. In production, pass your application's pool: see [Connecting to the Database](#connecting-to-the-database).
+
 The factory verifies the schema is at the expected version on creation. If it isn't, the SDK throws/returns a `SchemaNotInitialized*` or `SchemaOutOfDate*` error with the exact migration command in the message.
 
 #### Java
@@ -89,11 +100,10 @@ The factory verifies the schema is at the expected version on creation. If it is
 ```java
 import com.twelvevectors.gatedhouse.*;
 
-Database database = Database.fromUrl(
-    "jdbc:postgresql://localhost:5432/yourdb", "appuser", "secret");
-GatedhouseConfig config = GatedhouseConfig.builder().database(database).build();
-
-try (Gatedhouse gh = GatedhouseFactory.create(config)) {
+try (PooledDatabase database = Database.fromUrl(          // needs HikariCP
+         "jdbc:postgresql://localhost:5432/yourdb", "appuser", "secret");
+     Gatedhouse gh = GatedhouseFactory.create(
+         GatedhouseConfig.builder().database(database).build())) {
     gh.permissionCatalog().addService("workspace", "Workspace service");
     gh.permissionCatalog().addResource("workspace", "projects", "Project resource");
     gh.permissionCatalog().addAction("workspace", "projects", "read",  "Read projects");
@@ -115,11 +125,9 @@ try (Gatedhouse gh = GatedhouseFactory.create(config)) {
 ```python
 from gatedhouse import Database, EntityType, GatedhouseConfig, GatedhouseFactory
 
-database = Database.from_uri(
-    "postgresql://appuser:secret@localhost:5432/yourdb")
-config = GatedhouseConfig(database=database)
-
-with GatedhouseFactory.create(config) as gh:
+with Database.from_uri(  # needs gatedhouse[pool]
+        "postgresql://appuser:secret@localhost:5432/yourdb") as database, \
+        GatedhouseFactory.create(GatedhouseConfig(database=database)) as gh:
     gh.permission_catalog().add_service("workspace", "Workspace service")
     gh.permission_catalog().add_resource("workspace", "projects", "Project resource")
     gh.permission_catalog().add_action("workspace", "projects", "read",  "Read projects")
@@ -140,12 +148,13 @@ with GatedhouseFactory.create(config) as gh:
 ```rust
 use std::sync::Arc;
 use gatedhouse::{
-    ConninfoDatabase, Database, EntityType, GatedhouseConfig, GatedhouseFactory,
+    Database, EntityType, GatedhouseConfig, GatedhouseFactory, PooledDatabase,
 };
 
-let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(
+// feature "r2d2"
+let database: Arc<dyn Database> = Arc::new(PooledDatabase::from_url(
     "host=localhost user=appuser password=secret dbname=yourdb",
-));
+)?);
 let config = GatedhouseConfig::builder(database).build();
 let gh = GatedhouseFactory::create(config)?;
 
@@ -176,7 +185,12 @@ The three SDKs share **the same architecture, class names, and operation semanti
 
 | Concept | Java | Python | Rust |
 |---|---|---|---|
-| Build a `Database` | `Database.fromUrl(jdbcUrl, u, p)` | `Database.from_uri(conninfo)` | `Arc::new(ConninfoDatabase::new(conninfo))` |
+| Use the host's pool (production) | `Database.fromDataSource(ds)` | `Database.from_pool(pool)` | `Arc::new(pool.clone())` (feature `r2d2`) or `from_fn(...)` |
+| Gatedhouse-owned pool (dev/staging) | `Database.fromUrl(url, u, p)` → `PooledDatabase` | `Database.from_uri(conninfo)` → `PooledDatabase` | `PooledDatabase::from_url(conninfo)?` (feature `r2d2`) |
+| Close an owned pool | `pooled.close()` / try-with-resources | `pooled.close()` / `with` | drop the last `Arc` |
+| Database unavailable? | `e.kind() == Kind.UNAVAILABLE` | `e.kind is Kind.UNAVAILABLE` | `e.database_kind() == Some(DatabaseErrorKind::Unavailable)` |
+| Connection inside caller's transaction | `IllegalStateException` | `RuntimeError` | cannot happen |
+| Inheritance edge would form a cycle | `IllegalArgumentException` | `ValueError` | `GatedhouseError::InvalidArgument` |
 | Build the config | `GatedhouseConfig.builder().database(db).build()` | `GatedhouseConfig(database=db)` | `GatedhouseConfig::builder(db).build()` |
 | Create | `GatedhouseFactory.create(config)` | `GatedhouseFactory.create(config)` | `GatedhouseFactory::create(config)?` |
 | Use with auto-cleanup | `try (Gatedhouse gh = ...)` | `with ... as gh:` | RAII via `Drop` (no syntax needed) |
@@ -261,7 +275,7 @@ from gatedhouse import (
     Database, GatedhouseConfig, GatedhouseFactory, TokenVerifierConfig)
 
 config = GatedhouseConfig(
-    database=Database.from_uri(conninfo),
+    database=database,  # see Connecting to the Database
     token_verifier=TokenVerifierConfig(
         jwks_uri="https://auth.example.com/.well-known/jwks.json",
         issuer="https://auth.example.com",
@@ -275,13 +289,9 @@ with GatedhouseFactory.create(config) as gh:
 
 ```rust
 // Rust
-use gatedhouse::{
-    ConninfoDatabase, Database, GatedhouseConfig, GatedhouseFactory,
-    TokenVerifierConfig,
-};
-use std::sync::Arc;
+use gatedhouse::{GatedhouseConfig, GatedhouseFactory, TokenVerifierConfig};
 
-let database: Arc<dyn Database> = Arc::new(ConninfoDatabase::new(conninfo));
+// database: Arc<dyn Database>, see Connecting to the Database
 let config = GatedhouseConfig::builder(database)
     .token_verifier(TokenVerifierConfig::new(
         "https://auth.example.com/.well-known/jwks.json",
@@ -522,7 +532,8 @@ com.twelvevectors.gatedhouse
 │   ├── createJustTokenVerifier(TokenVerifierConfig) ← database-free, verify-only
 │   └── migrate(GatedhouseConfig)  ← runs pending migrations
 ├── GatedhouseConfig (+ Builder)
-├── Database                    ← functional interface; getConnection()
+├── Database                    ← functional interface; getConnection(); fromDataSource / fromUrl
+├── PooledDatabase (+ Settings) ← Gatedhouse-owned HikariCP pool from fromUrl (optional dependency)
 ├── GroupSource (+ LocalGroupSource)
 ├── TokenVerifierConfig (+ Builder)
 │
@@ -542,7 +553,7 @@ com.twelvevectors.gatedhouse
 │
 ├── Exceptions (all RuntimeException)
 │   ├── GatedhouseInitializationException
-│   ├── GatedhouseDatabaseException
+│   ├── GatedhouseDatabaseException  (kind: UNAVAILABLE | QUERY)
 │   ├── SchemaNotInitializedException
 │   ├── SchemaOutOfDateException
 │   └── TokenVerificationException     (carries a Reason enum)
@@ -568,6 +579,166 @@ com.twelvevectors.gatedhouse
 
 ---
 
+## Connecting to the Database
+
+Gatedhouse never manages connections behind your back. It borrows them from
+a source you give it, and only opens its own when you hand it a URL.
+
+### The contract (identical in all three SDKs)
+
+| # | Guarantee |
+|---|---|
+| C1 | Every borrowed connection is returned, on every path, including errors |
+| C2 | One connection per operation, never two at once: a pool of size 1 cannot deadlock |
+| C3 | Gatedhouse commits or rolls back its own work, whatever autocommit setting your pool hands out |
+| C4 | Connections come back as they were lent: autocommit unchanged, no transaction open |
+| C5 | A connection already inside *your* transaction is refused (Java `IllegalStateException`, Python `RuntimeError`), never committed or rolled back by Gatedhouse. Rust cannot lend one out, so it cannot happen there |
+| C6 | No connection available (pool timeout, database unreachable, connection lost) is a typed **UNAVAILABLE** database error, distinct from a refused statement (**QUERY**) |
+| C7 | One Gatedhouse instance is safe to share across threads |
+
+Writes run as explicit `READ COMMITTED` transactions, so the library's
+locking (membership row locks, the role-inheritance lock) does not depend on
+your pool's default isolation level. Each guarantee has a test in every SDK
+(`ConnectionContractTest`, `test_connection_contract.py`,
+`tests/connection_contract.rs`), run in CI against PostgreSQL.
+
+### Production: pass your application's pool
+
+One pool, sized and monitored against the database's connection limit.
+Gatedhouse opens no connections of its own. Each permission check borrows a
+connection for one query, so size the pool for your request rate plus
+Gatedhouse's checks (the [permission cache](#permission-cache) cuts those).
+
+**Java**: any `javax.sql.DataSource` (HikariCP, Agroal, DBCP2, Tomcat JDBC,
+an application server's JNDI pool, Spring Boot's auto-configured pool):
+
+```java
+HikariDataSource pool = ...;                     // your application's pool
+Database db = Database.fromDataSource(pool);     // Gatedhouse never closes it
+```
+
+```java
+// Spring Boot
+@Bean(destroyMethod = "close")
+Gatedhouse gatedhouse(DataSource dataSource) {
+    return GatedhouseFactory.create(GatedhouseConfig.builder()
+        .database(Database.fromDataSource(dataSource)).build());
+}
+```
+
+Pass the plain pooled `DataSource`. A transaction-aware proxy
+(`TransactionAwareDataSourceProxy`) hands out the connection bound to the
+current `@Transactional` method; Gatedhouse refuses it (C5) rather than commit
+your work halfway. A pool configured with `autoCommit=false` is fine (C3).
+
+**Python**: a `psycopg_pool.ConnectionPool`:
+
+```python
+from psycopg_pool import ConnectionPool
+
+pool = ConnectionPool("postgresql://app:secret@db/app", max_size=20)  # yours
+database = Database.from_pool(pool)                                    # never closed by Gatedhouse
+```
+
+- Open the pool **after** the server forks its workers (gunicorn, uWSGI), for
+  example in the app factory, not at import time: connections do not survive
+  a fork.
+- Gatedhouse is synchronous. In async frameworks call it from a worker thread
+  (`run_in_executor`, as the bundled ASGI middleware does) with a
+  **synchronous** pool; `from_pool` rejects an `AsyncConnectionPool`.
+- A custom source subclasses `Database`. `connection()` must return a context
+  manager that yields a connection and gives it back on exit. Never return
+  `pool.getconn()`: nothing would give it back and the pool runs dry.
+
+SQLAlchemy application? Share the engine's pool (this recipe is run in CI):
+
+```python
+import contextlib
+from gatedhouse import Database
+
+class SQLAlchemyDatabase(Database):
+    def __init__(self, engine):
+        self._engine = engine          # e.g. create_engine("postgresql+psycopg://...")
+
+    @contextlib.contextmanager
+    def connection(self):
+        raw = self._engine.raw_connection()   # checked out of the engine's pool
+        try:
+            yield raw.driver_connection       # the underlying psycopg connection
+        finally:
+            raw.close()                       # back to the engine's pool
+```
+
+**Rust**: an `r2d2` pool (enable the `r2d2` feature), or any pool through
+`from_fn`:
+
+```toml
+gatedhouse = { version = "...", features = ["r2d2"] }
+```
+
+```rust
+// r2d2: the pool itself is a Database
+let pool: r2d2::Pool<PostgresConnectionManager<NoTls>> = /* yours */;
+let database: Arc<dyn Database> = Arc::new(pool.clone());
+
+// any other pool: return its handle (anything that derefs to postgres::Client)
+let database: Arc<dyn Database> = Arc::new(gatedhouse::from_fn(move || {
+    Ok(Box::new(my_pool.get()?) as gatedhouse::PooledClient)
+}));
+```
+
+### Development and staging: let Gatedhouse run a pool
+
+Hand Gatedhouse a URL and it runs its own pool, backed by an optional
+dependency so production hosts never download it:
+
+| | Java | Python | Rust |
+|---|---|---|---|
+| Add | `com.zaxxer:HikariCP` | `pip install 'gatedhouse[pool]'` | `features = ["r2d2"]` |
+| Create | `Database.fromUrl(url, user, pwd)` | `Database.from_uri(conninfo)` | `PooledDatabase::from_url(conninfo)?` |
+| Settings (defaults) | `PooledDatabase.Settings`: `maximumPoolSize` 10, `connectionTimeout` 10 s, `maxLifetime` 30 min | `max_size=10, timeout=10.0, max_lifetime=1800.0` | `PoolSettings`: `with_max_size(10)`, `with_connection_timeout(10 s)`, `with_max_lifetime(30 min)` |
+| TLS | via the JDBC URL | via `sslmode` in the URL | `PooledDatabase::from_url_with_tls(conninfo, tls, settings)` |
+| Close | `pool.close()` / try-with-resources | `pool.close()` / `with` | drop the last `Arc` |
+| Missing dependency | `IllegalStateException` naming HikariCP | `ImportError` naming `gatedhouse[pool]` | compile error (type behind the feature) |
+
+Whoever creates the pool closes it. Closing a `Gatedhouse` does not, because
+one `Database` is commonly shared by `migrate` and several instances. The
+pool opens lazily: a briefly unreachable database does not stop it being
+created; the first operation reports it. HikariCP logs through SLF4J; without
+an SLF4J backend it prints a one-time "no providers" notice, which is harmless.
+
+The migration CLIs use one plain connection and need none of these
+dependencies.
+
+### When the database is unavailable
+
+```java
+try {
+    allowed = gh.hasPermission(id, org, "workspace", "projects", "read");
+} catch (GatedhouseDatabaseException e) {
+    if (e.kind() == GatedhouseDatabaseException.Kind.UNAVAILABLE) {
+        return serviceUnavailable();   // 503: try again later; never "allowed"
+    }
+    throw e;
+}
+```
+
+Python: `e.kind is GatedhouseDatabaseError.Kind.UNAVAILABLE`. Rust:
+`e.database_kind() == Some(DatabaseErrorKind::Unavailable)`. A failed check has
+granted nothing: always fail closed.
+
+### Threads and concurrent writers
+
+Share one Gatedhouse instance across threads; each operation borrows its own
+connection, so add no locks of your own. Concurrent writers, including other
+processes and instances, are serialized where it matters by PostgreSQL itself:
+membership transitions lock the membership row, role-inheritance edits take a
+transaction-scoped advisory lock, and unique constraints reject duplicates.
+Gatedhouse operations cannot join a transaction of yours; each commits on its
+own.
+
+---
+
 ## Step-by-Step Setup
 
 ### 1. Migrate the schema
@@ -584,18 +755,15 @@ The runner takes a Postgres advisory lock so concurrent invocations from multipl
 
 ### 2. Build a `Database`
 
-A `Database` is a thin functional interface (`Connection getConnection() throws SQLException`). Two ways to obtain one:
-
 ```java
-// Direct DriverManager (no pooling)
-Database db = Database.fromUrl("jdbc:postgresql://...", "user", "pwd");
+// Production: your application's pool; Gatedhouse opens no connections of its own
+Database db = Database.fromDataSource(dataSource);
 
-// From an existing DataSource (e.g., HikariCP)
-HikariDataSource ds = ...;   // host owns lifecycle
-Database db = ds::getConnection;
+// Development and staging: Gatedhouse runs a HikariCP pool (add HikariCP; close it when done)
+PooledDatabase db = Database.fromUrl("jdbc:postgresql://...", "user", "pwd");
 ```
 
-The library does not bundle a connection pool. Wire your own (HikariCP is conventional) when you need pooling — Gatedhouse just calls `getConnection()`.
+See [Connecting to the Database](#connecting-to-the-database) for the guarantees, Spring Boot, Python and Rust equivalents, and failure handling.
 
 ### 3. Build the config
 
@@ -1183,7 +1351,8 @@ gh.roleManager().assignToIdentity(founderId, orgId, "gatedhouse:owner");
 ### Performance
 
 - The recursive CTE in `hasPermission` is fully indexed (every join touches a primary or secondary index). For low-millisecond decisions, that's already what you have.
-- Use connection pooling (HikariCP) — wire it via `Database`, the library doesn't bundle a pool.
+- Pass your application's pool (`Database.fromDataSource` / `Database.from_pool` / an `r2d2` pool), sized for your request rate plus Gatedhouse's checks. `fromUrl` / `from_uri` / `PooledDatabase::from_url` run a second, Gatedhouse-owned pool: fine for development and staging.
+- Treat `UNAVAILABLE` database errors as HTTP 503 and fail closed.
 - The `audit_log` is append-only; depending on retention policy you may want a periodic `VACUUM`/partition strategy.
 
 ### Testing
@@ -1240,6 +1409,22 @@ If the parent role doesn't exist (`hasRole(parent) == false`), the FK insert wil
 Your application can't reach the configured `jwksUri`, or the endpoint didn't answer within the JWKS timeout (default 5 s; set it on `TokenVerifierConfig`). Network-level issue, not a token issue. Curl the JWKS URL from the host running Gatedhouse to confirm.
 
 Java releases before this fix reported a failed JWKS fetch as `UNKNOWN_KEY` rather than `JWKS_UNAVAILABLE`. If your monitoring treats `UNKNOWN_KEY` as a possible forged token, expect fewer of those during IdP outages after upgrading.
+
+### `GatedhouseDatabaseException` with kind `UNAVAILABLE`
+
+No connection could be borrowed within the pool's timeout, the database is unreachable, or the connection was lost. Check the database, then the pool: is it too small for the load, or are connections held elsewhere? Gatedhouse holds one per operation and always returns it. Answer the request with 503 and fail closed.
+
+### "the connection ... is already inside a transaction"
+
+Your `Database` handed Gatedhouse a connection bound to a transaction of yours (typically a Spring `TransactionAwareDataSourceProxy` inside `@Transactional`). Gatedhouse commits its own work, so it refuses rather than commit yours. Pass the plain pooled `DataSource`; in Python, yield idle connections.
+
+### `fromUrl` / `from_uri` asks for a dependency
+
+URL mode runs a Gatedhouse-owned pool and needs its optional dependency: `com.zaxxer:HikariCP` (Java) or `pip install 'gatedhouse[pool]'` (Python). In Rust, `PooledDatabase` exists only with `features = ["r2d2"]`. In production, pass your own pool instead.
+
+### `addParentRole` rejects an edge: "would create an inheritance cycle"
+
+The parent already inherits, directly or transitively, from the child. Inheritance must stay acyclic; check `getParentRoles` up the chain.
 
 ### `SphinxException` / `SphinxError`
 

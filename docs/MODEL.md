@@ -132,8 +132,9 @@ roles.grantPermission("quote-drafter", "policies", "policy", "view");
 ```
 
 - **Inheritance** keeps roles small. `addParentRole(child, parent)` gives the
-  child every permission of the parent, transitively. Inheritance is a DAG;
-  cycles are rejected.
+  child every permission of the parent, transitively. Inheritance is a DAG:
+  an edge that would close a cycle is rejected, checked under a lock so two
+  concurrent edits cannot together create one.
 - **Wildcards.** `null` at any level of a grant means "any" at that level,
   matched column by column. `(policies, null, view)` covers every resource in
   `policies`, *including resources added to the catalog later*: a wildcard role
@@ -357,6 +358,16 @@ for (GrantPath p : e.paths()) {
 - **Breaking change:** `deleteMembership` no longer exists. Replace calls with
   `removeMembership`, which revokes the identity's grants in the org and keeps
   the membership row instead of deleting it.
+- **Breaking change (connections):** URL mode now runs a Gatedhouse-owned
+  pool backed by an optional dependency: Java `Database.fromUrl` returns a
+  `PooledDatabase` and needs HikariCP; Python `Database.from_uri` returns a
+  `PooledDatabase` and needs `gatedhouse[pool]`; Rust replaces
+  `ConninfoDatabase` with `PooledDatabase::from_url` (feature `r2d2`). The
+  Rust `Database` trait now returns a boxed handle (`PooledClient`) and a
+  boxed error, so pools can implement it, and `GatedhouseError::Database`
+  carries a `kind`. See [Connecting to the Database](../SKILLS.md#connecting-to-the-database).
+- `addParentRole` now rejects an edge that would create an inheritance cycle.
+  Existing cycles are not removed; evaluation tolerates them.
 
 ## Decision log
 
@@ -369,6 +380,7 @@ for (GrantPath p : e.paths()) {
 | D5 | Roles are global templates | The host platform owns its features and therefore its capabilities. Per-org roles would multiply definitions and make a role's meaning depend on the org |
 | D6 | Roles are global capabilities tied to platform functionality; groups are per-org titles and teams | Lets every tenant compose the same capabilities differently without forking roles or giving a role an org-dependent meaning |
 | D7 | `explainPermission` reports every granting path, including for denials | Additive permissions arrive through several paths, so removing one needs a way to see all of them |
+| D8 | Role inheritance is acyclic, enforced in a transaction under an advisory lock shared by all SDKs | A cycle makes every role in it equivalent, which is never intended. A check without the lock lets two concurrent edits each pass and together close a cycle |
 
 ### Deferred
 
