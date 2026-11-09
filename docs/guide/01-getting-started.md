@@ -2,7 +2,8 @@
 
 ## Requirements
 
-- PostgreSQL 12+, UTF-8 database encoding.
+- PostgreSQL 12+, UTF-8 database encoding (all SDKs; `SQL_ASCII` and other
+  encodings are not supported).
 - For migrations: a user with `CREATE` on the database. The application user
   needs read/write on the `gatedhouse` schema only.
 
