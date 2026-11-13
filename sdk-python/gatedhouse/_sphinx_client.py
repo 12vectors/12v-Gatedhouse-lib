@@ -11,8 +11,12 @@ Stdlib-only (``urllib``), mirroring the Java ``SphinxClient`` which uses
 from __future__ import annotations
 
 import json
+import re
 import socket
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib import error as _urlerror
 from urllib import parse as _urlparse
@@ -24,6 +28,38 @@ _Kind = SphinxError.Kind
 
 #: The timeout used when none is given, in seconds.
 DEFAULT_TIMEOUT = 10.0
+
+#: The scope of the app token ``create_person`` uses.
+PROVISIONING_SCOPE = "persons:create"
+
+#: A cached app token is replaced this many seconds before it expires.
+TOKEN_EXPIRY_MARGIN = 60
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedPerson:
+    """A person created by :meth:`SphinxClient.create_person`, as Sphinx
+    reports it. ``id`` is Sphinx's person id (``per_…``); ``status`` is e.g.
+    ``pending_verification`` until the person sets a password;
+    ``password_reset_sent`` says whether Sphinx emailed the set-password link
+    (if not, the person can use "Forgot password")."""
+
+    id: str
+    email: str
+    email_verified: bool
+    display_name: str | None
+    phone: str | None
+    phone_verified: bool
+    allow_auto_link: bool
+    status: str
+    created_at: datetime
+    password_reset_sent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _AppToken:
+    value: str
+    expires_at: float   # on the client's monotonic clock
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +93,9 @@ class SphinxClient:
         self._client_id = client_id
         self._client_secret = client_secret
         self._timeout = float(timeout)
+        self._monotonic = time.monotonic   # replaced in tests
+        self._app_token_lock = threading.Lock()
+        self._app_token: _AppToken | None = None
 
     @property
     def timeout(self) -> float:
@@ -114,6 +153,84 @@ class SphinxClient:
         # the body, so the body is parsed whatever the status.
         return _parse_object(body, "Introspection")
 
+    def create_person(self, email: str, *, display_name: str | None = None,
+                      phone: str | None = None, email_verified: bool | None = None,
+                      allow_auto_link: bool | None = None) -> ProvisionedPerson:
+        """Creates a person in Sphinx on behalf of this app. The app must be
+        marked "Can provision users" by a Sphinx admin.
+
+        ``email`` is required. Optional fields left as ``None`` are omitted
+        from the request, so Sphinx applies its default: ``email_verified``
+        false (``True`` means the app vouches for the address and the account
+        is active at once), ``allow_auto_link`` true. ``phone`` is E.164
+        (spaces and dashes allowed) and is stored unverified.
+
+        Mints an app token (``client_credentials`` with scope
+        ``persons:create``) and caches it in this instance until
+        :data:`TOKEN_EXPIRY_MARGIN` seconds before it expires, so later calls
+        make one request. Thread-safe; concurrent callers share one mint. A
+        401 from Sphinx drops the cached token (the next call mints a new
+        one); a 403 keeps it. Never retries.
+
+        Raises ``ValueError`` for a missing or blank email, before any
+        request; otherwise :class:`SphinxError`: ``HTTP_STATUS`` with
+        ``error_code`` e.g. ``unauthorized_client`` (app not privileged),
+        ``conflict`` (email exists), ``forbidden`` (domain not accepted, or
+        an admin domain), ``invalid_email``, ``invalid_phone``; ``TIMEOUT`` /
+        ``TRANSPORT``; or ``INVALID_RESPONSE``. After a timeout or
+        ``INVALID_RESPONSE`` the person may exist: a repeated call then
+        answers ``conflict``.
+        """
+        if not isinstance(email, str) or not email.strip():
+            raise ValueError("email is required")
+        payload: dict[str, Any] = {"email": email}
+        for key, value in (("display_name", display_name), ("phone", phone),
+                           ("email_verified", email_verified),
+                           ("allow_auto_link", allow_auto_link)):
+            if value is not None:
+                payload[key] = value
+        token = self._get_app_token()
+        req = _urlrequest.Request(
+            self._base_url + "/api/sphinx/v1/persons",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token.value}",
+                     "Content-Type": "application/json",
+                     "Accept": "application/json"},
+            method="POST",
+        )
+        status, body = self._send(req, "Person creation")
+        if status == 401:
+            self._drop_app_token(token)
+        if status != 201:
+            raise _refused("Person creation", status, body)
+        return _parse_provisioned_person(_parse_object(body, "Person creation"))
+
+    def _get_app_token(self) -> _AppToken:
+        """The cached app token, or a new one. At most one mint at a time."""
+        cached = self._app_token
+        if cached is not None and self._monotonic() < cached.expires_at:
+            return cached
+        with self._app_token_lock:
+            cached = self._app_token
+            now = self._monotonic()
+            if cached is not None and now < cached.expires_at:
+                return cached   # another thread minted it while we waited
+            minted = self.client_credentials(PROVISIONING_SCOPE)
+            if not isinstance(minted.access_token, str) or not minted.access_token:
+                raise SphinxError(_Kind.INVALID_RESPONSE,
+                                  "Token request returned no access_token")
+            usable = minted.expires_in - TOKEN_EXPIRY_MARGIN
+            token = _AppToken(minted.access_token, now + max(usable, 0))
+            # A token too short-lived to outlast the margin is used once, not cached.
+            self._app_token = token if usable > 0 else None
+            return token
+
+    def _drop_app_token(self, rejected: _AppToken) -> None:
+        """Forgets ``rejected`` unless another thread has replaced it already."""
+        with self._app_token_lock:
+            if self._app_token is rejected:
+                self._app_token = None
+
     def login_url(self, app_shortcode: str) -> str:
         """Builds a redirect URL to the standard Sphinx login page."""
         return f"{self._base_url}/login?app={_urlparse.quote_plus(app_shortcode)}"
@@ -131,14 +248,18 @@ class SphinxClient:
 
     def _post_form(self, path: str, params: dict[str, str],
                    op: str) -> tuple[int, str]:
-        """POST a form; return ``(status, body)`` for any HTTP answer, and
-        raise :class:`SphinxError` when there is none."""
+        """POST a form; see :meth:`_send`."""
         req = _urlrequest.Request(
             self._base_url + path,
             data=_urlparse.urlencode(params).encode("utf-8"),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             method="POST",
         )
+        return self._send(req, op)
+
+    def _send(self, req: _urlrequest.Request, op: str) -> tuple[int, str]:
+        """Send a request; return ``(status, body)`` for any HTTP answer, and
+        raise :class:`SphinxError` when there is none."""
         try:
             # urlopen's timeout bounds connecting and every read.
             with _urlrequest.urlopen(req, timeout=self._timeout) as resp:
@@ -170,9 +291,7 @@ class SphinxClient:
         status, body = self._post_form(
             "/api/sphinx/v1/oauth/token", params, "Token request")
         if status != 200:
-            raise SphinxError(_Kind.HTTP_STATUS,
-                              f"Token request failed ({status}): {body}",
-                              status_code=status)
+            raise _refused("Token request", status, body)
         payload = _parse_object(body, "Token request")
         expires_in = payload.get("expires_in")
         try:
@@ -188,6 +307,79 @@ class SphinxClient:
             scope=payload.get("scope"),
             issued_token_type=payload.get("issued_token_type"),
         )
+
+
+def _refused(op: str, status: int, body: str) -> SphinxError:
+    """An ``HTTP_STATUS`` error for an unsuccessful answer, with Sphinx's error code."""
+    return SphinxError(_Kind.HTTP_STATUS, f"{op} failed ({status}): {body}",
+                       status_code=status, error_code=_error_code_of(body))
+
+
+def _error_code_of(body: str) -> str | None:
+    """The ``error`` field of a JSON error body, or ``None`` for any other body."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    code = payload.get("error") if isinstance(payload, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def _parse_provisioned_person(payload: dict[str, Any]) -> ProvisionedPerson:
+    data, meta = payload.get("data"), payload.get("meta")
+    if not isinstance(data, dict) or not isinstance(meta, dict):
+        raise _invalid("Person creation returned no data or meta object")
+    return ProvisionedPerson(
+        id=_required(data, "id", str),
+        email=_required(data, "email", str),
+        email_verified=_required(data, "email_verified", bool),
+        display_name=_nullable_str(data, "display_name"),
+        phone=_nullable_str(data, "phone"),
+        phone_verified=_required(data, "phone_verified", bool),
+        allow_auto_link=_required(data, "allow_auto_link", bool),
+        status=_required(data, "status", str),
+        created_at=_parse_instant(_required(data, "created_at", str)),
+        password_reset_sent=_required(meta, "password_reset_sent", bool),
+    )
+
+
+def _required(data: dict[str, Any], name: str, kind: type) -> Any:
+    value = data.get(name)
+    if not isinstance(value, kind):
+        raise _invalid(f"Person creation returned no {kind.__name__} {name}")
+    return value
+
+
+def _nullable_str(data: dict[str, Any], name: str) -> str | None:
+    value = data.get(name)
+    if value is not None and not isinstance(value, str):
+        raise _invalid(f"Person creation returned a non-string {name}")
+    return value
+
+
+# An RFC 3339 instant, as Java's Instant.parse accepts it: 0-9 fractional
+# digits and "Z" or an offset. Python 3.10's fromisoformat takes neither "Z"
+# nor more than 6 digits, so the text is normalised first.
+_INSTANT = re.compile(
+    r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)")
+
+
+def _parse_instant(text: str) -> datetime:
+    match = _INSTANT.fullmatch(text)
+    if match is None:
+        raise _invalid("Person creation returned an invalid created_at")
+    seconds, fraction, offset = match.groups()
+    micros = (fraction or "").ljust(6, "0")[:6]
+    try:
+        parsed = datetime.fromisoformat(
+            f"{seconds}.{micros}{'+00:00' if offset == 'Z' else offset}")
+    except ValueError as e:
+        raise _invalid("Person creation returned an invalid created_at") from e
+    return parsed.astimezone(timezone.utc)
+
+
+def _invalid(message: str) -> SphinxError:
+    return SphinxError(_Kind.INVALID_RESPONSE, message)
 
 
 def _parse_object(body: str, op: str) -> dict[str, Any]:

@@ -55,7 +55,9 @@ pub use membership_manager::MembershipManager;
 pub use permission_cache::{InMemoryPermissionCache, PermissionCache};
 pub use permission_catalog::PermissionCatalog;
 pub use role_manager::RoleManager;
-pub use sphinx_client::{SphinxClient, SphinxError, SphinxErrorKind, TokenResponse};
+pub use sphinx_client::{
+    NewPerson, ProvisionedPerson, SphinxClient, SphinxError, SphinxErrorKind, TokenResponse,
+};
 pub use token_verifier::TokenVerifierConfig;
 pub use types::{
     AuthenticatedSubject, EffectivePermission, ExplanationOutcome, GrantPath, GrantSource,

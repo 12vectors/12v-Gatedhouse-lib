@@ -14,11 +14,15 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.LongSupplier;
 
 /**
  * HTTP Client wrapper to orchestrate Sphinx SSO OAuth 2.0 endpoints.
@@ -34,11 +38,24 @@ public final class SphinxClient {
     /** The timeout used when none is given: 10 seconds. */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
 
+    /** The scope of the app token {@link #createPerson} uses. */
+    public static final String PROVISIONING_SCOPE = "persons:create";
+
+    /** A cached app token is replaced this long before it expires. */
+    static final Duration TOKEN_EXPIRY_MARGIN = Duration.ofSeconds(60);
+
     private final String baseUrl;
     private final String clientId;
     private final String clientSecret;
     private final Duration timeout;
     private final HttpClient http;
+    private final LongSupplier nanoClock;
+
+    /** Guards minting and dropping {@link #appToken}; reads need no lock. */
+    private final Object appTokenLock = new Object();
+    private volatile AppToken appToken;
+
+    private record AppToken(String value, long expiresAtNanos) {}
 
     public SphinxClient(String baseUrl, String clientId, String clientSecret) {
         this(baseUrl, clientId, clientSecret, DEFAULT_TIMEOUT);
@@ -48,6 +65,12 @@ public final class SphinxClient {
      * @param timeout the longest any single network wait may take; must be positive
      */
     public SphinxClient(String baseUrl, String clientId, String clientSecret, Duration timeout) {
+        this(baseUrl, clientId, clientSecret, timeout, System::nanoTime);
+    }
+
+    /** For tests: {@code nanoClock} replaces {@link System#nanoTime()} for token expiry. */
+    SphinxClient(String baseUrl, String clientId, String clientSecret, Duration timeout,
+                 LongSupplier nanoClock) {
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("timeout must be positive, got " + timeout);
         }
@@ -56,6 +79,7 @@ public final class SphinxClient {
         this.clientSecret = clientSecret;
         this.timeout = timeout;
         this.http = HttpClient.newBuilder().connectTimeout(timeout).build();
+        this.nanoClock = nanoClock;
     }
 
     /** The longest any single network wait may take. */
@@ -126,6 +150,133 @@ public final class SphinxClient {
     }
 
     /**
+     * Creates a person in Sphinx on behalf of this app. The app must be marked
+     * "Can provision users" by a Sphinx admin.
+     *
+     * <p>Mints an app token ({@link #clientCredentials} with scope
+     * {@value #PROVISIONING_SCOPE}) and caches it in this instance until
+     * {@link #TOKEN_EXPIRY_MARGIN} before it expires, so later calls make one
+     * request. Thread-safe; concurrent callers share one mint. A 401 from Sphinx
+     * drops the cached token (the next call mints a new one); a 403 keeps it.
+     * Never retries.
+     *
+     * @throws SphinxException {@link SphinxException.Kind#HTTP_STATUS} when the
+     *     token request or the creation is refused, with
+     *     {@link SphinxException#errorCode()} e.g. {@code unauthorized_client} (app
+     *     not privileged), {@code conflict} (email exists), {@code forbidden}
+     *     (domain not accepted, or an admin domain), {@code invalid_email},
+     *     {@code invalid_phone}; {@code TIMEOUT}/{@code TRANSPORT}; or
+     *     {@code INVALID_RESPONSE}. After a timeout or {@code INVALID_RESPONSE}
+     *     the person may exist: a repeated call then answers {@code conflict}.
+     */
+    public ProvisionedPerson createPerson(NewPerson person) {
+        Objects.requireNonNull(person, "person");
+        AppToken token = appToken();
+        HttpRequest req = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/api/sphinx/v1/persons"))
+            .timeout(timeout)
+            .POST(HttpRequest.BodyPublishers.ofString(JSONObjectUtils.toJSONString(person.toJson())))
+            .header("Authorization", "Bearer " + token.value())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .build();
+        HttpResponse<String> resp = send(req, "Person creation");
+        if (resp.statusCode() == 401) {
+            dropAppToken(token);
+        }
+        if (resp.statusCode() != 201) {
+            throw refused("Person creation", resp);
+        }
+        return parseProvisionedPerson(parseObject(resp.body(), "Person creation"));
+    }
+
+    /** The cached app token, or a new one. At most one mint at a time. */
+    private AppToken appToken() {
+        AppToken cached = appToken;
+        if (cached != null && nanoClock.getAsLong() - cached.expiresAtNanos() < 0) {
+            return cached;
+        }
+        synchronized (appTokenLock) {
+            cached = appToken;
+            long now = nanoClock.getAsLong();
+            if (cached != null && now - cached.expiresAtNanos() < 0) {
+                return cached;   // another thread minted it while we waited
+            }
+            TokenResponse minted = clientCredentials(PROVISIONING_SCOPE);
+            if (minted.accessToken() == null || minted.accessToken().isEmpty()) {
+                throw new SphinxException(SphinxException.Kind.INVALID_RESPONSE, null,
+                    "Token request returned no access_token", null);
+            }
+            long usable = minted.expiresIn() - TOKEN_EXPIRY_MARGIN.toSeconds();
+            AppToken token = new AppToken(minted.accessToken(),
+                now + TimeUnit.SECONDS.toNanos(Math.max(usable, 0)));
+            // A token too short-lived to outlast the margin is used once, not cached.
+            appToken = usable > 0 ? token : null;
+            return token;
+        }
+    }
+
+    /** Forgets {@code rejected} unless another thread has replaced it already. */
+    private void dropAppToken(AppToken rejected) {
+        synchronized (appTokenLock) {
+            if (appToken == rejected) {
+                appToken = null;
+            }
+        }
+    }
+
+    private static ProvisionedPerson parseProvisionedPerson(Map<String, Object> json) {
+        if (!(json.get("data") instanceof Map<?, ?> rawData)
+                || !(json.get("meta") instanceof Map<?, ?> meta)) {
+            throw invalid("Person creation returned no data or meta object", null);
+        }
+        Map<?, ?> data = rawData;
+        Instant createdAt;
+        try {
+            createdAt = Instant.parse(requiredString(data, "created_at"));
+        } catch (DateTimeParseException e) {
+            throw invalid("Person creation returned an invalid created_at", e);
+        }
+        return new ProvisionedPerson(
+            requiredString(data, "id"),
+            requiredString(data, "email"),
+            requiredBoolean(data, "email_verified"),
+            nullableString(data, "display_name"),
+            nullableString(data, "phone"),
+            requiredBoolean(data, "phone_verified"),
+            requiredBoolean(data, "allow_auto_link"),
+            requiredString(data, "status"),
+            createdAt,
+            requiredBoolean(meta, "password_reset_sent"));
+    }
+
+    private static String requiredString(Map<?, ?> json, String name) {
+        if (json.get(name) instanceof String s) {
+            return s;
+        }
+        throw invalid("Person creation returned no string " + name, null);
+    }
+
+    private static String nullableString(Map<?, ?> json, String name) {
+        Object value = json.get(name);
+        if (value == null || value instanceof String) {
+            return (String) value;
+        }
+        throw invalid("Person creation returned a non-string " + name, null);
+    }
+
+    private static boolean requiredBoolean(Map<?, ?> json, String name) {
+        if (json.get(name) instanceof Boolean b) {
+            return b;
+        }
+        throw invalid("Person creation returned no boolean " + name, null);
+    }
+
+    private static SphinxException invalid(String message, Throwable cause) {
+        return new SphinxException(SphinxException.Kind.INVALID_RESPONSE, null, message, cause);
+    }
+
+    /**
      * Builds a redirect URL to the standard Sphinx login page.
      */
     public String loginUrl(String appShortcode) {
@@ -146,8 +297,7 @@ public final class SphinxClient {
     private TokenResponse postToken(String body) {
         HttpResponse<String> resp = post("/api/sphinx/v1/oauth/token", body, "Token request");
         if (resp.statusCode() != 200) {
-            throw new SphinxException(SphinxException.Kind.HTTP_STATUS, resp.statusCode(),
-                "Token request failed (" + resp.statusCode() + "): " + resp.body(), null);
+            throw refused("Token request", resp);
         }
         Map<String, Object> json = parseObject(resp.body(), "Token request");
         try {
@@ -166,14 +316,23 @@ public final class SphinxClient {
         }
     }
 
-    /**
-     * POSTs a form and returns the response, mapping every failure to a
-     * {@link SphinxException}. The JDK client bounds connecting
-     * ({@code connectTimeout}) and waiting for the response headers (the
-     * request timeout) but not reading the body, so the whole exchange is
-     * also capped at three timeouts (connect + headers + body): a server that
-     * stalls mid-body cannot hang the caller.
-     */
+    /** An HTTP_STATUS exception for an unsuccessful answer, with Sphinx's error code. */
+    private static SphinxException refused(String op, HttpResponse<String> resp) {
+        return new SphinxException(SphinxException.Kind.HTTP_STATUS, resp.statusCode(),
+            errorCodeOf(resp.body()),
+            op + " failed (" + resp.statusCode() + "): " + resp.body(), null);
+    }
+
+    /** The {@code error} field of a JSON error body, or null for any other body. */
+    private static String errorCodeOf(String body) {
+        try {
+            return JSONObjectUtils.parse(body).get("error") instanceof String s ? s : null;
+        } catch (java.text.ParseException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** POSTs a form; see {@link #send}. */
     private HttpResponse<String> post(String path, String form, String op) {
         HttpRequest req = HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + path))
@@ -181,6 +340,18 @@ public final class SphinxClient {
             .POST(HttpRequest.BodyPublishers.ofString(form))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .build();
+        return send(req, op);
+    }
+
+    /**
+     * Sends a request and returns the response, mapping every failure to a
+     * {@link SphinxException}. The JDK client bounds connecting
+     * ({@code connectTimeout}) and waiting for the response headers (the
+     * request timeout) but not reading the body, so the whole exchange is
+     * also capped at three timeouts (connect + headers + body): a server that
+     * stalls mid-body cannot hang the caller.
+     */
+    private HttpResponse<String> send(HttpRequest req, String op) {
         CompletableFuture<HttpResponse<String>> pending =
             http.sendAsync(req, HttpResponse.BodyHandlers.ofString());
         try {

@@ -123,6 +123,7 @@ async fn guard(State(f): State<Arc<GatedhouseApiFilter>>, mut req: Request, next
 | `tokenExchange(subjectToken, actorToken, delegationId, scope)` | delegation |
 | `refreshToken(refreshToken)` | refresh |
 | `introspect(token)` | token status map; body parsed for any HTTP status |
+| `createPerson(NewPerson)` | create a Sphinx user; see [Provisioning users](#provisioning-users) |
 
 `TokenResponse`: `accessToken`, `refreshToken`, `tokenType`, `expiresIn`
 (seconds), `scope`, `issuedTokenType`.
@@ -133,11 +134,13 @@ Errors: `SphinxException` (Java) / `SphinxError` (Python, Rust) with `kind`:
 |---|---|---|
 | `TIMEOUT` | no answer within the timeout | later, except `exchangeCode` |
 | `TRANSPORT` | connection failed | later |
-| `HTTP_STATUS` | refused; `statusCode` set | no |
+| `HTTP_STATUS` | refused; `statusCode` set, `errorCode` from the body's `error` field if any | no |
 | `INVALID_RESPONSE` | not the expected JSON (often a proxy) | no |
+| `INVALID_ARGUMENT` (Rust only) | rejected before any request (Java throws `IllegalArgumentException`, Python `ValueError`) | no |
 
-The client never retries. Authorization codes are single-use: after a failed
-`exchangeCode`, restart sign-in.
+`errorCode`: Java `Optional<String> errorCode()`, Python `error_code`, Rust
+`error_code: Option<String>`. The client never retries. Authorization codes are
+single-use: after a failed `exchangeCode`, restart sign-in.
 
 Sign-in callback, storing the token where the web filter reads it:
 
@@ -145,3 +148,63 @@ Sign-in callback, storing the token where the web filter reads it:
 TokenResponse t = sphinx.exchangeCode(req.getParameter("code"), redirectUri);
 req.getSession(true).setAttribute("access_token", t.accessToken());
 ```
+
+## Provisioning users
+
+`createPerson` creates a person in Sphinx on behalf of the app (Sphinx
+APP-PROV-1, migration `V015__app_provisioning.sql`).
+
+Prerequisite: a Sphinx admin marks the app **Can provision users** (Admin →
+Apps → app → Edit) and may set **Accepted email domains**. The `SphinxClient`
+uses the app's own client ID and secret; no other credential is needed. Sphinx
+refuses an admin's session token on this endpoint.
+
+```java
+ProvisionedPerson p = sphinx.createPerson(NewPerson.builder("jane@cicero-client.com")
+    .displayName("Jane Doe").phone("+35799123456").build());
+```
+```python
+p = sphinx.create_person("jane@cicero-client.com", display_name="Jane Doe", phone="+35799123456")
+```
+```rust
+let p = sphinx.create_person(&NewPerson::new("jane@cicero-client.com")
+    .display_name("Jane Doe").phone("+35799123456"))?;
+```
+
+| Field | Required | Sphinx default | Notes |
+|---|---|---|---|
+| `email` | yes | | identifier in Sphinx; null/blank rejected before any request |
+| `displayName` | no | none | |
+| `phone` | no | none | E.164; spaces and dashes allowed; stored **unverified** |
+| `emailVerified` | no | `false` | `true`: the app vouches for the address; account active at once |
+| `allowAutoLink` | no | `true` | `false`: a federated sign-in with the same email needs the user's confirmation |
+
+Unset fields are omitted from the request. Result `ProvisionedPerson`: `id`
+(`per_…`), `email`, `emailVerified`, `displayName`, `phone`, `phoneVerified`,
+`allowAutoLink`, `status`, `createdAt` (Java `Instant`, Python `datetime`, Rust
+`SystemTime`), `passwordResetSent`.
+
+After creation Sphinx emails a set-password link (1 h). Until the person sets a
+password (or links a Google/Microsoft account with a verified email), the
+status is `pending_verification` and they cannot sign in. If
+`passwordResetSent` is false, they use "Forgot password".
+
+Token: the first call mints an app token (`client_credentials`, scope
+`persons:create`, 1 h) and caches it in the client instance until 60 s before
+it expires; later calls make one request. Concurrent callers share one mint. A
+token living 60 s or less is not cached.
+
+| Situation | Status, `errorCode` | Cached token |
+|---|---|---|
+| app not privileged | 400 `unauthorized_client` (token request) | none minted |
+| wrong secret, app revoked | 401 `invalid_client` (token request) | none minted |
+| email exists | 409 `conflict` | kept |
+| domain not accepted, or a Sphinx admin domain | 403 `forbidden` | kept |
+| privilege switched off after the token was minted | 403 `forbidden` | kept |
+| invalid email / phone | 400 `invalid_email` / `invalid_phone` (`bad_request` if empty) | kept |
+| token expired or invalid | 401 | dropped; the next call mints a new one |
+| no answer | `TIMEOUT` / `TRANSPORT` | kept |
+
+Nothing is retried. After `TIMEOUT`, `TRANSPORT` or `INVALID_RESPONSE` the
+person may have been created; a repeated call then answers 409 `conflict`.
+Neither the client secret nor the app token appears in exception messages.

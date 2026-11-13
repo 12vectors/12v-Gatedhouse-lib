@@ -36,7 +36,7 @@ from ._membership_manager import MembershipManager
 from ._permission_cache import InMemoryPermissionCache, PermissionCache
 from ._permission_catalog import PermissionCatalog
 from ._role_manager import RoleManager
-from ._sphinx_client import SphinxClient, TokenResponse
+from ._sphinx_client import ProvisionedPerson, SphinxClient, TokenResponse
 from ._token_verifier_config import TokenVerifierConfig
 from ._types import (
     AuthenticatedSubject,
@@ -80,6 +80,7 @@ __all__ = [
     "GatedhouseWebFilter",
     "SphinxClient",
     "TokenResponse",
+    "ProvisionedPerson",
     # Value types
     "AuthenticatedSubject",
     "EffectivePermission",

@@ -126,8 +126,12 @@ class SphinxError(GatedhouseError, RuntimeError):
         INVALID_RESPONSE = "invalid_response"
 
     def __init__(self, kind: "SphinxError.Kind", message: str,
-                 status_code: int | None = None) -> None:
+                 status_code: int | None = None, error_code: str | None = None) -> None:
         super().__init__(message)
         self.kind = kind
         #: The HTTP status for ``HTTP_STATUS``; ``None`` for every other kind.
         self.status_code = status_code
+        #: Sphinx's machine-readable error code (the ``error`` field of its
+        #: JSON error body, e.g. ``"conflict"``) for ``HTTP_STATUS``; ``None``
+        #: when the body carried none.
+        self.error_code = error_code

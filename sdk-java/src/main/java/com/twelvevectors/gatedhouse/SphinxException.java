@@ -4,6 +4,7 @@
 
 package com.twelvevectors.gatedhouse;
 
+import java.util.Optional;
 import java.util.OptionalInt;
 
 /**
@@ -36,14 +37,25 @@ public final class SphinxException extends RuntimeException {
 
     private final Kind kind;
     private final Integer statusCode;
+    private final String errorCode;
 
     /**
      * @param statusCode the HTTP status, for {@link Kind#HTTP_STATUS}; otherwise {@code null}
      */
     public SphinxException(Kind kind, Integer statusCode, String message, Throwable cause) {
+        this(kind, statusCode, null, message, cause);
+    }
+
+    /**
+     * @param statusCode the HTTP status, for {@link Kind#HTTP_STATUS}; otherwise {@code null}
+     * @param errorCode  the {@code error} field of Sphinx's JSON error body, or {@code null}
+     */
+    public SphinxException(Kind kind, Integer statusCode, String errorCode, String message,
+                           Throwable cause) {
         super(message, cause);
         this.kind = java.util.Objects.requireNonNull(kind, "kind");
         this.statusCode = statusCode;
+        this.errorCode = errorCode;
     }
 
     public Kind kind() {
@@ -53,5 +65,14 @@ public final class SphinxException extends RuntimeException {
     /** The HTTP status for {@link Kind#HTTP_STATUS}; empty for every other kind. */
     public OptionalInt statusCode() {
         return statusCode == null ? OptionalInt.empty() : OptionalInt.of(statusCode);
+    }
+
+    /**
+     * Sphinx's machine-readable error code (the {@code error} field of its JSON
+     * error body, e.g. {@code "conflict"}, {@code "unauthorized_client"}) for
+     * {@link Kind#HTTP_STATUS}; empty when the body carried none.
+     */
+    public Optional<String> errorCode() {
+        return Optional.ofNullable(errorCode);
     }
 }

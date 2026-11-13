@@ -63,7 +63,8 @@ Rust wildcard and optional-text arguments are `Option<&str>`:
 | `GroupSource` | `start(gatedhouse)`, `close()`; default `LocalGroupSource` |
 | `TokenVerificationException` (Rust `TokenVerificationError`) | `reason`: `EXPIRED`, `NOT_YET_VALID`, `INVALID_SIGNATURE`, `INVALID_ISSUER`, `INVALID_AUDIENCE`, `MALFORMED`, `UNKNOWN_KEY`, `JWKS_UNAVAILABLE`, `OTHER`; Rust `reason.code()` |
 | `GatedhouseDatabaseException` (Python `GatedhouseDatabaseError`, Rust `GatedhouseError::Database`) | `kind`: `UNAVAILABLE`, `QUERY` (Rust `database_kind()`) |
-| `SphinxException` (Python/Rust `SphinxError`) | `kind`: `TIMEOUT`, `TRANSPORT`, `HTTP_STATUS`, `INVALID_RESPONSE`; `statusCode` |
+| `SphinxException` (Python/Rust `SphinxError`) | `kind`: `TIMEOUT`, `TRANSPORT`, `HTTP_STATUS`, `INVALID_RESPONSE` (Rust also `InvalidArgument`); `statusCode`; `errorCode` (Sphinx's `error` field) |
+| `ProvisionedPerson` | `id`, `email`, `emailVerified`, `displayName`, `phone`, `phoneVerified`, `allowAutoLink`, `status`, `createdAt`, `passwordResetSent` |
 
 All error types: [guide ch. 12](docs/guide/12-errors.md).
 
@@ -77,6 +78,7 @@ All error types: [guide ch. 12](docs/guide/12-errors.md).
 | `ForbiddenException`, `UnauthorizedException` | same names | `FilterError::{Forbidden, Unauthorized, Unavailable}` |
 | `SphinxClient(baseUrl, clientId, secret[, timeout])` | `SphinxClient(url, id, secret, timeout=)` | `SphinxClient::new(url, id, secret).with_timeout(d)` |
 | `exchangeCode`, `clientCredentials`, `tokenExchange`, `refreshToken`, `introspect`, `loginUrl`, `federatedLoginUrl` | snake_case | snake_case |
+| `createPerson(NewPerson.builder(email).displayName(..).phone(..).emailVerified(b).allowAutoLink(b).build())` → `ProvisionedPerson` | `create_person(email, *, display_name=, phone=, email_verified=, allow_auto_link=)` → `ProvisionedPerson` | `create_person(&NewPerson::new(email).display_name(..).phone(..).email_verified(b).allow_auto_link(b))?` → `ProvisionedPerson` |
 
 Constants: request attribute `com.twelvevectors.gatedhouse.context`, login
 path `/auth/login`, session attribute `access_token`, `Retry-After` 30 s.

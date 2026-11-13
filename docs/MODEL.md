@@ -111,6 +111,10 @@ Changes in the release after 0.3.0 (all breaking changes are bundled):
   identity; Python failed with an uncaught error; Rust accepted an empty
   `sub`). `GatedContext` treats wrongly typed claims as absent; a wrongly
   typed `person_type` is not human.
+- `SphinxClient.createPerson` added (needs Sphinx with APP-PROV-1). Sphinx
+  errors carry `errorCode`. Rust: `SphinxError` gains the public field
+  `error_code` and `SphinxErrorKind` gains `InvalidArgument` (breaking for
+  struct literals and exhaustive matches).
 - Smoke tests are no longer shipped (`gatedhouse-smoketest` script and
   `gatedhouse-smoke-test` binary removed).
 
